@@ -809,6 +809,22 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
     try {
       if (!audio) {
         audio = new AudioContext({sampleRate:8000});
+      }
+      if (audio.state === "running") {
+        await audio.suspend();
+        nextAudioTime = 0;
+        audioButton.style.background = "";
+        audioButton.textContent = "\u{1F507} \u0417\u0432\u0443\u043A";
+      } else {
+        await audio.resume();
+        nextAudioTime = 0;
+        audioButton.style.background = "#16a34a";
+        audioButton.textContent = "\u{1F50A} \u0417\u0432\u0443\u043A";
+      }
+    } catch (err) {
+      console.error("A9 audio:", err);
+    }
+  });
         audio.addEventListener("statechange", () => {
           audioButton.hidden = audio.state === "running";
         });
@@ -1586,7 +1602,7 @@ def make_handler(state, first_timeout, max_age):
                         + P.pb_varint_field(2, 0)
                         + P.pb_varint_field(2, 0)
                     )
-                    _cam_did = (state.status or {}).get("did") or "PPFT00000000000000"
+                    _cam_did = (state.status or {}).get("did") or "PPFT0302D37F51CC9A"
                     did_b = _cam_did.encode("utf-8")
                     base_cmd = P.pb_varint_field(1, cid_num) + b"\x12\x03" + bytes([p0, 0, 0])
                     ppiot = (
