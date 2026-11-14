@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.py[cod]
+*.log
+*.tar.gz
+Cam_Records/
