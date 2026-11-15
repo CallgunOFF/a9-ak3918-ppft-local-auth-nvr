@@ -103,15 +103,27 @@ def _ptz_goto(st, sid):
     print(f"[PTZ-PTS] Едем в T{sid} ({tx:.2f}с, {ty:.2f}с) из ({_PTZ_POS['x']:.2f}с, {_PTZ_POS['y']:.2f}с): dx={dx:+.2f}с, dy={dy:+.2f}с", flush=True)
     if abs(dx) > 0.08:
         c_h = 14 if dx > 0 else 13
-        st.push_cmd(2664, P.pb_varint_field(2, c_h))
-        time.sleep(min(12.0, abs(dx) * 0.88))
-        st.push_cmd(2664, P.pb_varint_field(2, 10))
+        rem = min(12.0, abs(dx) * 0.90)
+        while rem > 0.02:
+            st.push_cmd(2664, P.pb_varint_field(2, c_h))
+            step = min(0.16, rem)
+            time.sleep(step)
+            st.push_cmd(2664, P.pb_varint_field(2, 10))
+            rem -= step
+            if rem > 0.02:
+                time.sleep(0.14)
         _PTZ_POS["x"] = tx
     if abs(dy) > 0.08:
         c_v = 11 if dy > 0 else 12
-        st.push_cmd(2664, P.pb_varint_field(2, c_v))
-        time.sleep(min(6.0, abs(dy) * 0.88))
-        st.push_cmd(2664, P.pb_varint_field(2, 10))
+        rem = min(6.0, abs(dy) * 0.90)
+        while rem > 0.02:
+            st.push_cmd(2664, P.pb_varint_field(2, c_v))
+            step = min(0.16, rem)
+            time.sleep(step)
+            st.push_cmd(2664, P.pb_varint_field(2, 10))
+            rem -= step
+            if rem > 0.02:
+                time.sleep(0.14)
         _PTZ_POS["y"] = ty
     _PTZ_POS["dir"], _PTZ_POS["t"] = 10, time.time()
     try:
@@ -797,224 +809,53 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
 </div>
 <script>
 (async () => {
-  const canvas = document.getElementById("video");
-  const ctx = canvas.getContext("2d");
-  const magic = [65,57,65,86]; // A9AV
-  let pending = new Uint8Array(0);
-  let audio = null;
-  let nextAudioTime = 0;
+  let audio = null, nextT = 0, aCtrl = null;
   const audioButton = document.getElementById("enable-audio");
-
-  audioButton.addEventListener("click", async () => {
-    try {
-      if (!audio) {
-        audio = new AudioContext({sampleRate:8000});
-      }
-      if (audio.state === "running") {
-        await audio.suspend();
-        nextAudioTime = 0;
-        audioButton.style.background = "";
-        audioButton.textContent = "\u{1F507} \u0417\u0432\u0443\u043A";
-      } else {
-        await audio.resume();
-        nextAudioTime = 0;
-        audioButton.style.background = "#16a34a";
-        audioButton.textContent = "\u{1F50A} \u0417\u0432\u0443\u043A";
-      }
-    } catch (err) {
-      console.error("A9 audio:", err);
-    }
-  });
-        audio.addEventListener("statechange", () => {
-          audioButton.hidden = audio.state === "running";
-        });
-      }
-      await audio.resume();
-      nextAudioTime = 0;
-      audioButton.hidden = audio.state === "running";
-    } catch (err) {
-      audioButton.hidden = false;
-      console.error("A9 audio:", err);
-    }
-  });
-
-  function findMagic(b) {
-    for (let i = 0; i <= b.length - 4; i++) {
-      if (b[i] === magic[0] && b[i+1] === magic[1] &&
-          b[i+2] === magic[2] && b[i+3] === magic[3]) return i;
-    }
-    return -1;
-  }
-
-  function playPCM(payload) {
-    // Discard muted audio so enabling sound starts with live samples.
+  function playRawPCM(buf) {
     if (!audio || audio.state !== "running") return;
-
-    const count = Math.floor(payload.length / 2);
-    if (!count) return;
-
-    const view = new DataView(
-      payload.buffer, payload.byteOffset, payload.byteLength
-    );
-    const buffer = audio.createBuffer(1, count, 8000);
-    const samples = buffer.getChannelData(0);
-
-    for (let i = 0; i < count; i++) {
-      samples[i] = view.getInt16(i * 2, true) / 32768;
-    }
-
-    const source = audio.createBufferSource();
-    source.buffer = buffer;
-    const gain = audio.createGain();
-    gain.gain.value = 1.5; // +3,5 dB circa
-    source.connect(gain);
-    gain.connect(audio.destination);
-
+    const cnt = Math.floor(buf.byteLength / 2);
+    if (!cnt) return;
+    const dv = new DataView(buf);
+    const f32 = Float32Array.from(new Int16Array(buf, 0, cnt), x => x / 32768);
+    const ab = audio.createBuffer(1, cnt, 8000);
+    ab.copyToChannel(f32, 0);
+    const src = audio.createBufferSource();
+    src.buffer = ab;
+    src.connect(audio.destination);
     const now = audio.currentTime;
-    if (nextAudioTime < now || nextAudioTime > now + 0.5) {
-      nextAudioTime = now + 0.08;
-    }
-
-    source.start(nextAudioTime);
-    nextAudioTime += buffer.duration;
+    if (nextT < now || nextT > now + 0.35) nextT = now + 0.05;
+    src.start(nextT);
+    nextT += ab.duration;
   }
-
-  function showJPEG(payload) {
-    createImageBitmap(new Blob([payload], {type:"image/jpeg"}))
-      .then(bitmap => {
-        if (canvas.width !== bitmap.width ||
-            canvas.height !== bitmap.height) {
-          canvas.width = bitmap.width;
-          canvas.height = bitmap.height;
-        }
-        ctx.drawImage(bitmap, 0, 0);
-        bitmap.close();
-      })
-      .catch(() => {});
-  }
-
-  const response = await fetch("/stream?raw=1", {cache:"no-store"});
-  if (!response.ok || !response.body) {
-    throw new Error("No stream available: HTTP " + response.status);
-  }
-
-  const reader = response.body.getReader();
-
-  while (true) {
-    const result = await reader.read();
-    if (result.done) break;
-
-    const incoming = result.value;
-    const joined = new Uint8Array(pending.length + incoming.length);
-    joined.set(pending);
-    joined.set(incoming, pending.length);
-    pending = joined;
-
-    while (pending.length >= 17) {
-      const pos = findMagic(pending);
-
-      if (pos < 0) {
-        pending = pending.slice(-3);
-        break;
+  async function runAudio() {
+    aCtrl = new AbortController();
+    try {
+      const r = await fetch("/audio.pcm", {cache: "no-store", signal: aCtrl.signal});
+      const rd = r.body.getReader();
+      while (true) {
+        const res = await rd.read();
+        if (res.done) break;
+        const v = res.value;
+        playRawPCM(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
       }
-
-      if (pos > 0) pending = pending.slice(pos);
-      if (pending.length < 17) break;
-
-      const header = new DataView(
-        pending.buffer, pending.byteOffset, pending.byteLength
-      );
-      const type = pending[4];
-      const length = header.getUint32(13, false);
-
-      if (length > 10000000) {
-        throw new Error("Invalid record length");
-      }
-
-      if (pending.length < 17 + length) break;
-
-      const payload = pending.slice(17, 17 + length);
-      pending = pending.slice(17 + length);
-
-      if (type === 1) showJPEG(payload);
-      else if (type === 2) playPCM(payload);
-    }
+    } catch (err) {}
   }
-
-})().catch(err => console.error("A9 stream:", err));
-</script>
-<script>
-(() => {
-  const sendCtrl = (q) => fetch("/ctrl?" + q, {cache:"no-store"}).catch(()=>{});
-
-  document.querySelectorAll("#ptz-pad button").forEach(btn => {
-    const dir = btn.dataset.dir;
-    let moving = false;
-    const startMove = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      moving = true;
-      btn.style.background = "rgba(255,255,255,.35)";
-      sendCtrl("act=" + dir);
-    };
-    const stopMove = (e) => {
-      if (!moving) return;
-      moving = false;
-      btn.style.background = dir === "stop" ? "rgba(180,40,40,.6)" : "rgba(0,0,0,.55)";
-      if (dir !== "stop") sendCtrl("act=stop");
-    };
-    btn.addEventListener("pointerdown", startMove);
-    btn.addEventListener("pointerup", stopMove);
-    btn.addEventListener("pointerleave", stopMove);
-    btn.addEventListener("pointercancel", stopMove);
+  audioButton.addEventListener("click", async () => {
+    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
+    if (audio.state === "running") {
+      if (aCtrl) { aCtrl.abort(); aCtrl = null; }
+      await audio.suspend();
+      nextT = 0;
+      audioButton.style.background = "";
+      audioButton.innerHTML = "&#128263; &#1047;&#1074;&#1091;&#1082;";
+    } else {
+      await audio.resume();
+      nextT = 0;
+      audioButton.style.background = "#16a34a";
+      audioButton.innerHTML = "&#128266; &#1047;&#1074;&#1091;&#1082;";
+      runAudio();
+    }
   });
-
-  const flipModes = [
-    {label: "&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;", val: 4, css: "rotate(180deg)"},
-    {label: "&#128260; &#1055;&#1077;&#1088;&#1077;&#1074;&#1077;&#1088;&#1085;&#1091;&#1090;&#1100; (180&#176;)", val: 1, css: "none"},
-    {label: "&#128260; &#1054;&#1090;&#1088;&#1072;&#1079;&#1080;&#1090;&#1100; &#1075;&#1086;&#1088;&#1080;&#1079;.", val: 2, css: "rotate(180deg) scaleX(-1)"},
-    {label: "&#128260; &#1054;&#1090;&#1088;&#1072;&#1079;&#1080;&#1090;&#1100; &#1074;&#1077;&#1088;&#1090;&#1080;&#1082;.", val: 3, css: "rotate(180deg) scaleY(-1)"}
-  ];
-  let flipIdx = 0;
-  const applyFlip = () => {
-    const fm = flipModes[flipIdx];
-    const vid = document.querySelector("video, canvas, img");
-    if (vid) vid.style.transform = fm.css;
-    const bf = document.getElementById("btn-flip");
-    if (bf) bf.innerHTML = fm.label;
-  };
-  applyFlip();
-  setTimeout(applyFlip, 800);
-  const btnFlip = document.getElementById("btn-flip");
-  if (btnFlip) {
-    btnFlip.addEventListener("click", () => {
-      flipIdx = (flipIdx + 1) % flipModes.length;
-      const fm = flipModes[flipIdx];
-      sendCtrl("act=flip&val=" + fm.val);
-      applyFlip();
-    });
-  }
-
-  let irMode = 0;
-  const irLabels = ["&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;", "&#127769; &#1048;&#1050;: &#1042;&#1099;&#1082;&#1083;", "&#127769; &#1048;&#1050;: &#1042;&#1082;&#1083;"];
-  const btnIr = document.getElementById("btn-ir");
-  if (btnIr) {
-    btnIr.addEventListener("click", () => {
-      irMode = (irMode + 1) % 3;
-      sendCtrl("act=ir&val=" + irMode);
-      btnIr.innerHTML = irLabels[irMode];
-    });
-  }
-
-  let resHd = 0;
-  const btnRes = document.getElementById("btn-res");
-  if (btnRes) {
-    btnRes.addEventListener("click", () => {
-      resHd = resHd ? 0 : 1;
-      sendCtrl("act=res&val=" + resHd);
-      btnRes.innerHTML = resHd ? "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: HD" : "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD";
-    });
-  }
 })();
 </script>
 <div id="sd-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:10000;align-items:center;justify-content:center;padding:16px;"><div style="background:#1c1e24;color:#fff;border:1px solid #444;border-radius:14px;padding:18px;width:100%;max-width:360px;font-family:sans-serif;"><div style="display:flex;justify-content:space-between;margin-bottom:10px;"><b>&#128190; SD-&#1082;&#1072;&#1088;&#1090;&#1072;</b><span id="sd-x" style="font-size:22px;cursor:pointer;">&times;</span></div><div id="sd-t" style="background:#262932;padding:10px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:10px;">&#1054;&#1078;&#1080;&#1076;&#1072;&#1085;&#1080;&#1077;...</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;"><button id="sd-r" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128260; &#1048;&#1085;&#1092;&#1086;</button><button id="sd-d" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128197; &#1044;&#1085;&#1080;</button><button id="sd-o" type="button" style="padding:9px;border-radius:8px;border:1px solid #2ecc71;background:#1e5631;color:#fff;">&#9210; &#1047;&#1072;&#1087;&#1080;&#1089;&#1100; 30&#1089;</button><button id="sd-s" type="button" style="padding:9px;border-radius:8px;border:1px solid #888;background:#3a3f47;color:#fff;">&#9209; &#1057;&#1090;&#1086;&#1087;</button></div><button id="sd-f" type="button" style="width:100%;padding:9px;border-radius:8px;border:1px solid #e74c3c;background:#6e2323;color:#fff;">&#9888;&#65039; &#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD</button></div></div><script>(()=>{const m=document.getElementById("sd-m"),t=document.getElementById("sd-t"),upd=(p)=>fetch("/sd/info?poll="+(p?1:0),{cache:"no-store"}).then(r=>r.json()).then(d=>{const tot=d.total_mb?(d.total_mb/1024).toFixed(2)+" GB":"&#8212;",u=d.used_mb?(d.used_mb/1024).toFixed(2)+" GB":"0 MB",fr=(d.total_mb&&d.total_mb>=d.used_mb)?((d.total_mb-d.used_mb)/1024).toFixed(2)+" GB":"&#8212;";t.innerHTML="<b>&#1057;&#1090;&#1072;&#1090;&#1091;&#1089;:</b> "+d.last_msg+"<br><b>&#1042;&#1089;&#1077;&#1075;&#1086;:</b> "+tot+"<br><b>&#1047;&#1072;&#1085;&#1103;&#1090;&#1086; / &#1057;&#1074;&#1086;&#1073;&#1086;&#1076;&#1085;&#1086;:</b> "+u+" / "+fr+(Object.keys(d.raw||{}).length?"<br><small style=color:#aaa>RX: "+JSON.stringify(d.raw)+"</small>":"");});document.getElementById("btn-sd").onclick=()=>{m.style.display="flex";upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-x").onclick=()=>if (m && m.id && (m.id.includes("snd") || m.id.includes("audio"))) { m.innerHTML = "&#128266; &#1047;&#1074;&#1091;&#1082;: &#1042;&#1082;&#1083;"; } else { m.style.display = "none"; }document.getElementById("sd-r").onclick=()=>{upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-d").onclick=()=>fetch("/sd/days").then(()=>setTimeout(()=>upd(0),1200));document.getElementById("sd-o").onclick=()=>fetch("/sd/record?dur=30").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-s").onclick=()=>fetch("/sd/record?dur=0").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-f").onclick=()=>{if(confirm("&#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD-&#1082;&#1072;&#1088;&#1090;&#1091;?"))fetch("/sd/format").then(()=>setTimeout(()=>upd(0),1500));};})();</script><script>(()=>{const mm=[{l:"&#128680; &#1044;&#1074;&#1080;&#1078;&#1077;&#1085;&#1080;&#1077;: &#1042;&#1099;&#1082;&#1083;",v:0,bg:"rgba(0,0,0,.6)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1053;&#1080;&#1079;&#1082;",v:1,bg:"rgba(210,160,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1057;&#1088;&#1077;&#1076;",v:2,bg:"rgba(230,110,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1042;&#1099;&#1089;&#1086;&#1082;",v:3,bg:"rgba(210,40,40,.85)"}];let mi=0;const b=document.getElementById("btn-mot");if(b)b.onclick=()=>{mi=(mi+1)%mm.length;const m=mm[mi];fetch("/ctrl?act=motion&val="+m.v,{cache:"no-store"});b.innerHTML=m.l;b.style.background=m.bg;};})();</script><div id="nvr-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.84);z-index:99999;align-items:center;justify-content:center;padding:16px;">
@@ -1464,6 +1305,29 @@ def make_handler(state, first_timeout, max_age):
                 self.wfile.write(_tb)
                 return
 
+            if self.path.startswith("/audio.pcm"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                aseq = getattr(state, "audio_seq", 0)
+                try:
+                    while not state.stop:
+                        out = []
+                        with state.audio_cond:
+                            state.audio_cond.wait_for(lambda: state.stop or state.audio_seq != aseq, timeout=1.0)
+                            if state.stop: break
+                            for seq_i, _, pcm_i in state.audio_chunks:
+                                if seq_i > aseq:
+                                    out.append(pcm_i)
+                                    aseq = seq_i
+                        for chunk in out:
+                            self.wfile.write(chunk)
+                        if out:
+                            self.wfile.flush()
+                except Exception:
+                    pass
+                return
             if self.path.startswith("/cam/ext"):
                 _pb_b = lambda fn, b: P.enc_varint((fn << 3) | 2) + P.enc_varint(len(b)) + b
                 from urllib.parse import urlparse, parse_qs
