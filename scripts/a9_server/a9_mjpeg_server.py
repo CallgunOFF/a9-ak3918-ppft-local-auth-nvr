@@ -785,9 +785,9 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
 <canvas id="video" style="display:none;"></canvas>
 <div id="top-bar" style="position:fixed;top:12px;left:12px;right:12px;display:flex;flex-wrap:wrap;gap:8px;z-index:9999;pointer-events:none;">
   <button id="enable-audio" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128266; &#1047;&#1074;&#1091;&#1082;</button>
-  <button id="btn-ir" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;</button>
-  <button id="btn-res" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD</button>
-  <button id="btn-flip" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;</button>
+  <button id="btn-ir" type="button" onclick="uiIr(this)" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;</button>
+  <button id="btn-res" type="button" onclick="uiRes(this)" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD</button>
+  <button id="btn-flip" type="button" onclick="uiFlip(this)" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;</button>
   <button id="btn-sd" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128190; SD</button>
   <button id="btn-nvr" type="button" style="cursor:pointer;position:relative;z-index:9999;pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#127902; NVR</button>
 <button id="btn-cam-ext" type="button" onclick="document.getElementById('cam-ext-modal').style.display='flex'" style="pointer-events:auto !important;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:8px;padding:6px 10px;font-size:13px;">&#9881; &#1050;&#1072;&#1084;&#1077;&#1088;&#1072;</button>
@@ -999,74 +999,60 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
 }</script>
 <div id="osd-clk" style="display:none;position:fixed;bottom:62px;left:12px;color:#fff;background:rgba(0,0,0,.45);padding:2px 7px;border-radius:4px;font-family:monospace;font-size:13px;z-index:50;pointer-events:none;"></div>
 <script>
-(() => {
-  // 1. &#1044;&#1078;&#1086;&#1081;&#1089;&#1090;&#1080;&#1082; PTZ (#ptz-pad)
-  const pad = document.getElementById("ptz-pad");
-  if (pad) {
-    let activeDir = null;
-    const sendPtz = (dir) => fetch("/ctrl?act=" + dir, {cache: "no-store"}).catch(() => {});
-    pad.querySelectorAll("button[data-dir]").forEach(btn => {
-      const dir = btn.getAttribute("data-dir");
-      const start = (e) => {
-        e.preventDefault();
-        if (dir === "stop") { activeDir = null; sendPtz("stop"); return; }
-        activeDir = dir;
-        sendPtz(dir);
-      };
-      const stop = (e) => {
-        if (e) e.preventDefault();
-        if (activeDir && dir !== "stop") { activeDir = null; sendPtz("stop"); }
-      };
-      btn.addEventListener("pointerdown", start);
-      btn.addEventListener("pointerup", stop);
-      btn.addEventListener("pointercancel", stop);
-      btn.addEventListener("pointerleave", stop);
-    });
-  }
+window._irI = 0;
+window._irL = Array.of("&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;", "&#9728;&#65039; &#1048;&#1050;: &#1042;&#1099;&#1082;&#1083;", "&#127761; &#1048;&#1050;: &#1042;&#1082;&#1083;");
+window.uiIr = function(b) {
+  window._irI = (window._irI + 1) % 3;
+  b.innerHTML = window._irL.at(window._irI);
+  fetch("/ctrl?act=ir&val=" + window._irI, {cache: "no-store"}).catch(function(){});
+};
 
-  // 2. IR (#btn-ir)
-  const irModes = Array.of(
-    {l:"&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;", v:0},
-    {l:"&#9728;&#65039; &#1048;&#1050;: &#1042;&#1099;&#1082;&#1083;", v:1},
-    {l:"&#127761; &#1048;&#1050;: &#1042;&#1082;&#1083;", v:2}
-  );
-  let irIdx = 0;
-  const bIr = document.getElementById("btn-ir");
-  if (bIr) bIr.onclick = () => {
-    irIdx = (irIdx + 1) % irModes.length;
-    bIr.innerHTML = irModes.at(irIdx).l;
-    fetch("/ctrl?act=ir&val=" + irModes.at(irIdx).v, {cache: "no-store"}).catch(() => {});
-  };
+window._hd = false;
+window.uiRes = function(b) {
+  window._hd = !window._hd;
+  b.innerHTML = window._hd ? "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: HD" : "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD";
+  fetch("/ctrl?act=res&val=" + (window._hd ? 1 : 0), {cache: "no-store"}).catch(function(){});
+};
 
-  // 3. Quality SD / HD (#btn-res)
-  let isHd = false;
-  const bRes = document.getElementById("btn-res");
-  if (bRes) bRes.onclick = () => {
-    isHd = !isHd;
-    bRes.innerHTML = isHd ? "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: HD" : "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD";
-    fetch("/ctrl?act=res&val=" + (isHd ? 1 : 0), {cache: "no-store"}).catch(() => {});
-  };
+window._flI = 0;
+window._flL = Array.of(
+  "&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;",
+  "&#128260; &#1055;&#1086;&#1074;&#1086;&#1088;&#1086;&#1090; 180&#176;",
+  "&#8596; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1043;",
+  "&#8597; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1042;"
+);
+window.uiFlip = function(b) {
+  window._flI = (window._flI + 1) % 4;
+  b.innerHTML = window._flL.at(window._flI);
+  fetch("/ctrl?act=flip&val=" + window._flI, {cache: "no-store"}).catch(function(){});
+};
 
-  // 4. Flip / Mirror (#btn-flip)
-  const flips = Array.of(
-    "&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;",
-    "&#128260; &#1055;&#1086;&#1074;&#1086;&#1088;&#1086;&#1090; 180&#176;",
-    "&#8596; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1043;",
-    "&#8597; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1042;"
-  );
-  let flIdx = 0;
-  const bFlip = document.getElementById("btn-flip");
-  if (bFlip) bFlip.onclick = () => {
-    flIdx = (flIdx + 1) % flips.length;
-    bFlip.innerHTML = flips.at(flIdx);
-    fetch("/ctrl?act=flip&val=" + flIdx, {cache: "no-store"}).catch(() => {});
-  };
-
-  // 5. &#1052;&#1103;&#1075;&#1082;&#1080;&#1081; &#1087;&#1077;&#1088;&#1077;&#1079;&#1072;&#1087;&#1091;&#1089;&#1082; MJPEG &#1087;&#1088;&#1080; &#1086;&#1073;&#1088;&#1099;&#1074;&#1077; &#1080;&#1083;&#1080; &#1089;&#1084;&#1077;&#1085;&#1077; &#1088;&#1077;&#1078;&#1080;&#1084;&#1072; (&#1073;&#1077;&#1079; &#1086;&#1073;&#1088;&#1099;&#1074;&#1072; &#1078;&#1080;&#1074;&#1086;&#1075;&#1086; &#1087;&#1086;&#1090;&#1086;&#1082;&#1072;)
-  const im = document.getElementById("mjpg");
+(function() {
+  var pad = document.getElementById("ptz-pad");
+  if (!pad) return;
+  var activeDir = null;
+  var sendPtz = function(dir) { fetch("/ctrl?act=" + dir, {cache: "no-store"}).catch(function(){}); };
+  pad.querySelectorAll("button[data-dir]").forEach(function(btn) {
+    var dir = btn.getAttribute("data-dir");
+    var start = function(e) {
+      e.preventDefault();
+      if (dir === "stop") { activeDir = null; sendPtz("stop"); return; }
+      activeDir = dir;
+      sendPtz(dir);
+    };
+    var stop = function(e) {
+      if (e) e.preventDefault();
+      if (activeDir && dir !== "stop") { activeDir = null; sendPtz("stop"); }
+    };
+    btn.addEventListener("pointerdown", start);
+    btn.addEventListener("pointerup", stop);
+    btn.addEventListener("pointercancel", stop);
+    btn.addEventListener("pointerleave", stop);
+  });
+  var im = document.getElementById("mjpg");
   if (im) {
-    im.onerror = () => setTimeout(() => { im.src = "/stream.mjpg?t=" + Date.now(); }, 600);
-    document.addEventListener("visibilitychange", () => {
+    im.onerror = function() { setTimeout(function() { im.src = "/stream.mjpg?t=" + Date.now(); }, 600); };
+    document.addEventListener("visibilitychange", function() {
       if (!document.hidden) im.src = "/stream.mjpg?t=" + Date.now();
     });
   }
@@ -1514,7 +1500,7 @@ def make_handler(state, first_timeout, max_age):
                     mv = int(qs.get("val", ["0"])[0])
                     state.push_cmd(2637, P.pb_varint_field(1, 0) + P.pb_varint_field(2, mv))
                 elif act == "flip":
-                    fval = int(qs.get("val", ["1"])[0])
+                    fval = int(next(iter(qs.get("val", ("1",)))))
                     state.push_cmd(2646, P.pb_varint_field(1, 0) + P.pb_varint_field(2, fval))
                     state.push_cmd(2656, P.pb_varint_field(1, 0) + P.pb_varint_field(2, fval))
                 elif act == "led_full":
