@@ -1014,17 +1014,29 @@ window.uiRes = function(b) {
   fetch("/ctrl?act=res&val=" + (window._hd ? 1 : 0), {cache: "no-store"}).catch(function(){});
 };
 
-window._flI = 0;
+window._flI = parseInt(localStorage.getItem("a9_flip") || "0", 10) || 0;
 window._flL = Array.of(
   "&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;",
   "&#128260; &#1055;&#1086;&#1074;&#1086;&#1088;&#1086;&#1090; 180&#176;",
   "&#8596; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1043;",
   "&#8597; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1042;"
 );
+window._flT = Array.of("none", "rotate(180deg)", "scaleX(-1)", "scaleY(-1)");
+window.applyFlip = function(idx) {
+  var im = document.getElementById("mjpg");
+  var b = document.getElementById("btn-flip");
+  if (im) im.style.transform = window._flT.at(idx) || "none";
+  if (b) b.innerHTML = window._flL.at(idx);
+};
 window.uiFlip = function(b) {
   window._flI = (window._flI + 1) % 4;
-  b.innerHTML = window._flL.at(window._flI);
+  localStorage.setItem("a9_flip", String(window._flI));
+  window.applyFlip(window._flI);
   fetch("/ctrl?act=flip&val=" + window._flI, {cache: "no-store"}).catch(function(){});
+};
+setTimeout(function(){ window.applyFlip(window._flI); }, 50);
+
+(function(){});
 };
 
 (function() {
