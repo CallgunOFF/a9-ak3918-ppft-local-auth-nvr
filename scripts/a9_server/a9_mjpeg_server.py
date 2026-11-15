@@ -782,6 +782,20 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
 </head>
 <body>
 <img id="mjpg" src="/stream.mjpg" style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;pointer-events:none;" />
+<script>
+(() => {
+  const im = document.getElementById("mjpg");
+  let reTimer = null;
+  const kick = () => {
+    clearTimeout(reTimer);
+    reTimer = setTimeout(() => { im.src = "/stream.mjpg?t=" + Date.now(); }, 700);
+  };
+  im.onerror = kick;
+  im.onload = () => { if (!im.naturalWidth) kick(); };
+  setInterval(() => { if (!im.naturalWidth) kick(); }, 2500);
+  window.addEventListener("beforeunload", () => { im.src = ""; });
+})();
+</script>
 <canvas id="video" style="display:none;"></canvas>
 <div id="top-bar" style="position:fixed;top:12px;left:12px;right:12px;display:flex;flex-wrap:wrap;gap:8px;z-index:9999;pointer-events:none;">
   <button id="enable-audio" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128266; &#1047;&#1074;&#1091;&#1082;</button>
