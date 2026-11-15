@@ -782,20 +782,6 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
 </head>
 <body>
 <img id="mjpg" src="/stream.mjpg" style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;pointer-events:none;" />
-<script>
-(() => {
-  const im = document.getElementById("mjpg");
-  let reTimer = null;
-  const kick = () => {
-    clearTimeout(reTimer);
-    reTimer = setTimeout(() => { im.src = "/stream.mjpg?t=" + Date.now(); }, 700);
-  };
-  im.onerror = kick;
-  im.onload = () => { if (!im.naturalWidth) kick(); };
-  setInterval(() => { if (!im.naturalWidth) kick(); }, 2500);
-  window.addEventListener("beforeunload", () => { im.src = ""; });
-})();
-</script>
 <canvas id="video" style="display:none;"></canvas>
 <div id="top-bar" style="position:fixed;top:12px;left:12px;right:12px;display:flex;flex-wrap:wrap;gap:8px;z-index:9999;pointer-events:none;">
   <button id="enable-audio" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128266; &#1047;&#1074;&#1091;&#1082;</button>
@@ -829,15 +815,15 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
     if (!audio || audio.state !== "running") return;
     const cnt = Math.floor(buf.byteLength / 2);
     if (!cnt) return;
-    const dv = new DataView(buf);
-    const f32 = Float32Array.from(new Int16Array(buf, 0, cnt), x => x / 32768);
     const ab = audio.createBuffer(1, cnt, 8000);
-    ab.copyToChannel(f32, 0);
+    const ch = ab.getChannelData(0);
+    const i16 = new Int16Array(buf, 0, cnt);
+    for (let i = 0; i < cnt; i++) ch.set([i16.at(i) / 32768], i);
     const src = audio.createBufferSource();
     src.buffer = ab;
     src.connect(audio.destination);
     const now = audio.currentTime;
-    if (nextT < now || nextT > now + 0.35) nextT = now + 0.05;
+    if (nextT < now || nextT > now + 0.4) nextT = now + 0.06;
     src.start(nextT);
     nextT += ab.duration;
   }
@@ -852,24 +838,28 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
         const v = res.value;
         playRawPCM(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
       }
-    } catch (err) {}
+    } catch (e) {}
   }
-  audioButton.addEventListener("click", async () => {
-    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
-    if (audio.state === "running") {
-      if (aCtrl) { aCtrl.abort(); aCtrl = null; }
-      await audio.suspend();
-      nextT = 0;
-      audioButton.style.background = "";
-      audioButton.innerHTML = "&#128263; &#1047;&#1074;&#1091;&#1082;";
-    } else {
-      await audio.resume();
-      nextT = 0;
-      audioButton.style.background = "#16a34a";
-      audioButton.innerHTML = "&#128266; &#1047;&#1074;&#1091;&#1082;";
-      runAudio();
-    }
-  });
+  if (audioButton) {
+    audioButton.onclick = async () => {
+      try {
+        if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
+        if (audio.state === "running") {
+          if (aCtrl) { aCtrl.abort(); aCtrl = null; }
+          await audio.suspend();
+          nextT = 0;
+          audioButton.style.background = "";
+          audioButton.innerHTML = "&#128263; &#1047;&#1074;&#1091;&#1082;";
+        } else {
+          await audio.resume();
+          nextT = 0;
+          audioButton.style.background = "#16a34a";
+          audioButton.innerHTML = "&#128266; &#1047;&#1074;&#1091;&#1082;";
+          runAudio();
+        }
+      } catch (e) {}
+    };
+  }
 })();
 </script>
 <div id="sd-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:10000;align-items:center;justify-content:center;padding:16px;"><div style="background:#1c1e24;color:#fff;border:1px solid #444;border-radius:14px;padding:18px;width:100%;max-width:360px;font-family:sans-serif;"><div style="display:flex;justify-content:space-between;margin-bottom:10px;"><b>&#128190; SD-&#1082;&#1072;&#1088;&#1090;&#1072;</b><span id="sd-x" style="font-size:22px;cursor:pointer;">&times;</span></div><div id="sd-t" style="background:#262932;padding:10px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:10px;">&#1054;&#1078;&#1080;&#1076;&#1072;&#1085;&#1080;&#1077;...</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;"><button id="sd-r" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128260; &#1048;&#1085;&#1092;&#1086;</button><button id="sd-d" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128197; &#1044;&#1085;&#1080;</button><button id="sd-o" type="button" style="padding:9px;border-radius:8px;border:1px solid #2ecc71;background:#1e5631;color:#fff;">&#9210; &#1047;&#1072;&#1087;&#1080;&#1089;&#1100; 30&#1089;</button><button id="sd-s" type="button" style="padding:9px;border-radius:8px;border:1px solid #888;background:#3a3f47;color:#fff;">&#9209; &#1057;&#1090;&#1086;&#1087;</button></div><button id="sd-f" type="button" style="width:100%;padding:9px;border-radius:8px;border:1px solid #e74c3c;background:#6e2323;color:#fff;">&#9888;&#65039; &#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD</button></div></div><script>(()=>{const m=document.getElementById("sd-m"),t=document.getElementById("sd-t"),upd=(p)=>fetch("/sd/info?poll="+(p?1:0),{cache:"no-store"}).then(r=>r.json()).then(d=>{const tot=d.total_mb?(d.total_mb/1024).toFixed(2)+" GB":"&#8212;",u=d.used_mb?(d.used_mb/1024).toFixed(2)+" GB":"0 MB",fr=(d.total_mb&&d.total_mb>=d.used_mb)?((d.total_mb-d.used_mb)/1024).toFixed(2)+" GB":"&#8212;";t.innerHTML="<b>&#1057;&#1090;&#1072;&#1090;&#1091;&#1089;:</b> "+d.last_msg+"<br><b>&#1042;&#1089;&#1077;&#1075;&#1086;:</b> "+tot+"<br><b>&#1047;&#1072;&#1085;&#1103;&#1090;&#1086; / &#1057;&#1074;&#1086;&#1073;&#1086;&#1076;&#1085;&#1086;:</b> "+u+" / "+fr+(Object.keys(d.raw||{}).length?"<br><small style=color:#aaa>RX: "+JSON.stringify(d.raw)+"</small>":"");});document.getElementById("btn-sd").onclick=()=>{m.style.display="flex";upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-x").onclick=()=>if (m && m.id && (m.id.includes("snd") || m.id.includes("audio"))) { m.innerHTML = "&#128266; &#1047;&#1074;&#1091;&#1082;: &#1042;&#1082;&#1083;"; } else { m.style.display = "none"; }document.getElementById("sd-r").onclick=()=>{upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-d").onclick=()=>fetch("/sd/days").then(()=>setTimeout(()=>upd(0),1200));document.getElementById("sd-o").onclick=()=>fetch("/sd/record?dur=30").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-s").onclick=()=>fetch("/sd/record?dur=0").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-f").onclick=()=>{if(confirm("&#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD-&#1082;&#1072;&#1088;&#1090;&#1091;?"))fetch("/sd/format").then(()=>setTimeout(()=>upd(0),1500));};})();</script><script>(()=>{const mm=[{l:"&#128680; &#1044;&#1074;&#1080;&#1078;&#1077;&#1085;&#1080;&#1077;: &#1042;&#1099;&#1082;&#1083;",v:0,bg:"rgba(0,0,0,.6)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1053;&#1080;&#1079;&#1082;",v:1,bg:"rgba(210,160,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1057;&#1088;&#1077;&#1076;",v:2,bg:"rgba(230,110,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1042;&#1099;&#1089;&#1086;&#1082;",v:3,bg:"rgba(210,40,40,.85)"}];let mi=0;const b=document.getElementById("btn-mot");if(b)b.onclick=()=>{mi=(mi+1)%mm.length;const m=mm[mi];fetch("/ctrl?act=motion&val="+m.v,{cache:"no-store"});b.innerHTML=m.l;b.style.background=m.bg;};})();</script><div id="nvr-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.84);z-index:99999;align-items:center;justify-content:center;padding:16px;">
@@ -1008,6 +998,71 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
   }).catch(()=>{ if(st) st.textContent = 'Err'; });
 }</script>
 <div id="osd-clk" style="display:none;position:fixed;bottom:62px;left:12px;color:#fff;background:rgba(0,0,0,.45);padding:2px 7px;border-radius:4px;font-family:monospace;font-size:13px;z-index:50;pointer-events:none;"></div>
+<script>
+(() => {
+  // 1. &#1044;&#1078;&#1086;&#1081;&#1089;&#1090;&#1080;&#1082; PTZ (#ptz-pad)
+  const pad = document.getElementById("ptz-pad");
+  if (pad) {
+    let activeDir = null;
+    const sendPtz = (dir) => fetch("/ctrl?act=" + dir, {cache: "no-store"}).catch(() => {});
+    pad.querySelectorAll("button[data-dir]").forEach(btn => {
+      const dir = btn.getAttribute("data-dir");
+      const start = (e) => {
+        e.preventDefault();
+        if (dir === "stop") { activeDir = null; sendPtz("stop"); return; }
+        activeDir = dir;
+        sendPtz(dir);
+      };
+      const stop = (e) => {
+        if (e) e.preventDefault();
+        if (activeDir && dir !== "stop") { activeDir = null; sendPtz("stop"); }
+      };
+      btn.addEventListener("pointerdown", start);
+      btn.addEventListener("pointerup", stop);
+      btn.addEventListener("pointercancel", stop);
+      btn.addEventListener("pointerleave", stop);
+    });
+  }
+
+  // 2. &#1048;&#1050;-&#1087;&#1086;&#1076;&#1089;&#1074;&#1077;&#1090;&#1082;&#1072; (#btn-ir)
+  const irModes = [{l:"&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;", v:0}, {l:"&#9728;&#65039; &#1048;&#1050;: &#1042;&#1099;&#1082;&#1083;", v:1}, {l:"&#127761; &#1048;&#1050;: &#1042;&#1082;&#1083;", v:2}];
+  let irIdx = 0;
+  const bIr = document.getElementById("btn-ir");
+  if (bIr) bIr.onclick = () => {
+    irIdx = (irIdx + 1) % irModes.length;
+    bIr.innerHTML = irModes.at(irIdx).l;
+    fetch("/ctrl?act=ir&val=" + irModes.at(irIdx).v, {cache: "no-store"}).catch(() => {});
+  };
+
+  // 3. &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086; SD / HD (#btn-res)
+  let isHd = false;
+  const bRes = document.getElementById("btn-res");
+  if (bRes) bRes.onclick = () => {
+    isHd = !isHd;
+    bRes.innerHTML = isHd ? "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: HD" : "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD";
+    fetch("/ctrl?act=res&val=" + (isHd ? 1 : 0), {cache: "no-store"}).catch(() => {});
+  };
+
+  // 4. &#1055;&#1086;&#1074;&#1086;&#1088;&#1086;&#1090; / &#1079;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; (#btn-flip)
+  const flips = ["&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;", "&#128260; &#1055;&#1086;&#1074;&#1086;&#1088;&#1086;&#1090; 180&#176;", "&#8596; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1043;", "&#8597; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1042;"];
+  let flIdx = 0;
+  const bFlip = document.getElementById("btn-flip");
+  if (bFlip) bFlip.onclick = () => {
+    flIdx = (flIdx + 1) % flips.length;
+    bFlip.innerHTML = flips.at(flIdx);
+    fetch("/ctrl?act=flip&val=" + flIdx, {cache: "no-store"}).catch(() => {});
+  };
+
+  // 5. &#1052;&#1103;&#1075;&#1082;&#1080;&#1081; &#1087;&#1077;&#1088;&#1077;&#1079;&#1072;&#1087;&#1091;&#1089;&#1082; MJPEG &#1087;&#1088;&#1080; &#1086;&#1073;&#1088;&#1099;&#1074;&#1077; &#1080;&#1083;&#1080; &#1089;&#1084;&#1077;&#1085;&#1077; &#1088;&#1077;&#1078;&#1080;&#1084;&#1072; (&#1073;&#1077;&#1079; &#1086;&#1073;&#1088;&#1099;&#1074;&#1072; &#1078;&#1080;&#1074;&#1086;&#1075;&#1086; &#1087;&#1086;&#1090;&#1086;&#1082;&#1072;)
+  const im = document.getElementById("mjpg");
+  if (im) {
+    im.onerror = () => setTimeout(() => { im.src = "/stream.mjpg?t=" + Date.now(); }, 600);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) im.src = "/stream.mjpg?t=" + Date.now();
+    });
+  }
+})();
+</script>
 </body>
 </html>
 """
