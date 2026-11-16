@@ -16,6 +16,7 @@ a9_mjpeg_server.py - live MJPEG/snapshot server for an XCThings/Linklemo A9 came
 Holds one PPRPC session to a camera you own, decodes the MJPEG stream continuously,
 and serves it over HTTP so a browser or Home Assistant can show a live feed:
 
+ if False:
     python3 a9_mjpeg_server.py                 # discover (or read a9_camera.json)
     python3 a9_mjpeg_server.py 192.168.3.114   # a specific camera
     # then open http://127.0.0.1:8080/
@@ -25,7 +26,7 @@ Endpoints:
     /stream.mjpg    multipart/x-mixed-replace MJPEG stream  (HA: "MJPEG IP Camera")
     /snapshot.jpg   the latest single frame                 (HA: "Generic Camera" still)
     /status         JSON: battery, firmware, connected/streaming (from cmd-2780 pushes)
-    /stream         browser stream with audio
+    /stream?raw=1   multiplexed A9AV binary stream: b'A9AV' + uint32le(type: 1=JPEG, 2=PCM8k) + uint32le(len) + payload
     /live.ts        vlc, mpv and possibly other players stream with audio
     
 Uses the shared protocol/crypto in a9_proto.py, so
@@ -59,6 +60,8 @@ if os.path.exists(_ep0):
 _PATROL = {"on": os.environ.get("PATROL_ON", "0") == "1", "sec": max(5, int(os.environ.get("PATROL_SEC", "15") or "15")), "pts": [int(x) for x in os.environ.get("PATROL_PTS", "1,2,3,4").split(",") if x.strip().isdigit()]}
 
 _cx, _cy = map(float, os.environ.get("CUR_POS", "6.0,3.0").split(",", 1)) if "," in os.environ.get("CUR_POS", "") else (6.0, 3.0)
+_PTZ_LOCK = threading.Lock()
+_LAST_PTZ_TS = 0.0
 _PTZ_POS = {"x": float(_cx), "y": float(_cy), "dir": 10, "t": time.time(), "pts": {}}
 for _k in (1, 2, 3, 4):
     _v = os.environ.get(f"PSP_{_k}", "").strip("()")
@@ -70,6 +73,9 @@ for _k in (1, 2, 3, 4):
             pass
 
 def _ptz_track(code):
+  global _LAST_PTZ_TS
+  _LAST_PTZ_TS = time.time()
+  with _PTZ_LOCK:
     now = time.time()
     dt = min(15.0, max(0.0, now - _PTZ_POS["t"]))
     d = _PTZ_POS["dir"]
@@ -90,47 +96,53 @@ def _get_st():
             return o
     return None
 
-def _ptz_goto(st, sid):
+def _ptz_goto(st, sid, is_patrol=False):
     sid = int(sid if isinstance(sid, list) else sid)
-    pt = next((v for k, v in _PTZ_POS.get("pts", {}).items() if int(k) == sid), None)
+    with _PTZ_LOCK:
+        pt = next((v for k, v in _PTZ_POS.get("pts", {}).items() if int(k) == sid), None)
+        cx, cy = _PTZ_POS["x"], _PTZ_POS["y"]
     st = st or _get_st()
     if pt is None or st is None:
         print(f"[PTZ-PTS] Точка T{sid} не найдена (pts={_PTZ_POS.get('pts')})", flush=True)
         return
     tx, ty = pt
     _ptz_track(10)
-    dx, dy = tx - _PTZ_POS["x"], ty - _PTZ_POS["y"]
-    print(f"[PTZ-PTS] Едем в T{sid} ({tx:.2f}с, {ty:.2f}с) из ({_PTZ_POS['x']:.2f}с, {_PTZ_POS['y']:.2f}с): dx={dx:+.2f}с, dy={dy:+.2f}с", flush=True)
-    if abs(dx) > 0.08:
-        c_h = 14 if dx > 0 else 13
-        rem = min(12.0, abs(dx) * 0.90)
-        while rem > 0.02:
-            st.push_cmd(2664, P.pb_varint_field(2, c_h))
-            step = min(0.16, rem)
-            time.sleep(step)
+    dx, dy = tx - cx, ty - cy
+    print(f"[PTZ-PTS] Плавный переход в T{sid} ({tx:.2f}с, {ty:.2f}с) из ({cx:.2f}с, {cy:.2f}с): dx={dx:+.2f}с, dy={dy:+.2f}с", flush=True)
+
+    def _glide(code_dir, dist_sec):
+        rem = dist_sec * 0.90
+        step_idx = 0
+        while rem > 0.015:
+            if is_patrol and not _PATROL["on"]:
+                st.push_cmd(2664, P.pb_varint_field(2, 10))
+                return False
+            # Плавный старт (первые 2 шага) и мягкий довод (при остатке < 0.16с)
+            base_pulse = 0.055 if (step_idx < 2 or rem < 0.16) else 0.075
+            pulse = min(base_pulse, rem)
+            st.push_cmd(2664, P.pb_varint_field(2, code_dir))
+            time.sleep(pulse)
             st.push_cmd(2664, P.pb_varint_field(2, 10))
-            rem -= step
-            if rem > 0.02:
-                time.sleep(0.14)
-        _PTZ_POS["x"] = tx
-    if abs(dy) > 0.08:
-        c_v = 11 if dy > 0 else 12
-        rem = min(6.0, abs(dy) * 0.90)
-        while rem > 0.02:
-            st.push_cmd(2664, P.pb_varint_field(2, c_v))
-            step = min(0.16, rem)
-            time.sleep(step)
-            st.push_cmd(2664, P.pb_varint_field(2, 10))
-            rem -= step
-            if rem > 0.02:
-                time.sleep(0.14)
-        _PTZ_POS["y"] = ty
-    _PTZ_POS["dir"], _PTZ_POS["t"] = 10, time.time()
+            rem -= pulse
+            step_idx += 1
+            if rem > 0.015:
+                time.sleep(0.18)
+        return True
+
+    if abs(dx) > 0.06:
+        if _glide(14 if dx > 0 else 13, min(12.0, abs(dx))):
+            with _PTZ_LOCK:
+                _PTZ_POS["x"] = tx
+    if abs(dy) > 0.06:
+        if _glide(11 if dy > 0 else 12, min(6.0, abs(dy))):
+            with _PTZ_LOCK:
+                _PTZ_POS["y"] = ty
+
+    with _PTZ_LOCK:
+        _PTZ_POS["dir"], _PTZ_POS["t"] = 10, time.time()
+        nx, ny = _PTZ_POS["x"], _PTZ_POS["y"]
     try:
-        ep = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-        ls = [l for l in open(ep, encoding="utf-8") if not l.startswith("CUR_POS=")] if os.path.exists(ep) else []
-        ls.append(f"CUR_POS={_PTZ_POS['x']:.2f},{_PTZ_POS['y']:.2f}" + chr(10))
-        open(ep, "w", encoding="utf-8").writelines(ls)
+        _save_env_kv({"CUR_POS": f"{nx:.2f},{ny:.2f}"})
     except Exception:
         pass
 
@@ -147,13 +159,12 @@ def _patrol_loop():
         sid = pts[idx % len(pts)]
         idx += 1
         print(f"[PTZ-PTS] Патруль -> T{sid} (пауза {_PATROL['sec']}с)", flush=True)
-        _ptz_goto(_get_st(), sid)
+        _ptz_goto(_get_st(), sid, is_patrol=True)
         for _ in range(_PATROL["sec"] * 2):
             time.sleep(0.5)
             if not _PATROL["on"]:
                 break
 
-threading.Thread(target=_patrol_loop, daemon=True).start()
 import argparse
 import struct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -167,30 +178,6 @@ import queue
 from fractions import Fraction
 import io
 import numpy as np
-
-def decode_alaw(data):
-    pcm = bytearray()
-
-    for value in data:
-        value ^= 0x55
-        sample = (value & 0x0F) << 4
-        segment = (value & 0x70) >> 4
-
-        if segment == 0:
-            sample += 8
-        else:
-            sample += 0x108
-            sample <<= segment - 1
-
-        if value & 0x80:
-            sample = sample
-        else:
-            sample = -sample
-
-        pcm.extend(struct.pack("<h", sample))
-
-    return bytes(pcm)
-
 
 # ---------- Shared latest-frame state ----------
 
@@ -313,8 +300,7 @@ class Latest:
 
     def release_client(self):
         """Release client and stops sessione if necessary."""
-        sock = None
-
+        
         with self.cond:
             if self.client_count > 0:
                 self.client_count -= 1
@@ -324,17 +310,7 @@ class Latest:
 
             self.cond.notify_all()
 
-        # shuts socket.
-        if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
 
-            try:
-                sock.close()
-            except OSError:
-                pass
 
 # ---------- Camera session ----------
 
@@ -366,7 +342,7 @@ def camera_loop(ip, did, secret, state, timeout, start_seq):
                 except OSError:
                     pass
                 _us.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
-                s.settimeout(2.0)
+                if _us: _us.settimeout(2.0)
                 _pkt = bytes.fromhex("5170480401a8140c")
                 for _i in range(5):
                     _us.sendto(_pkt, (ip, P.PORT))
@@ -526,22 +502,6 @@ def _run_session(s, did, secret, state, timeout, start_seq):
     media_counts = {}
 
     def process(mt, body):
-        if False and not hasattr(process, "_raw_body_dumped") and len(body) > 1000:
-            process._raw_body_dumped = True
-            try:
-                with open("/sdcard/Download/FtyCam_Project/artifacts/raw_body.bin", "wb") as _fp:
-                    _fp.write(body)
-                print(f"[RAW-BODY] mt={mt} len={len(body)} head64={body[:64].hex()}", flush=True)
-            except Exception as _e:
-                print(f"[RAW-BODY-ERR] {_e!r}", flush=True)
-        if False and mt == 6 and not hasattr(process, "_raw_body_dumped"):
-            process._raw_body_dumped = True
-            try:
-                with open("/sdcard/Download/FtyCam_Project/artifacts/raw_body.bin", "wb") as _fp:
-                    _fp.write(body)
-                print(f"[RAW-BODY] len={len(body)} head64={body[:64].hex()}", flush=True)
-            except Exception as _e:
-                print(f"[RAW-BODY-ERR] {_e!r}", flush=True)
         if mt == 4:
             try:
                 _c, _rs, _rp, _ct = P.ctrl_exhdr(body)
@@ -593,7 +553,12 @@ def _run_session(s, did, secret, state, timeout, start_seq):
                 try:
                     start, avch, avseq, tt, enclen, data = P.media_exhdr(body)
                     if enclen > 0:
-                        n = min(enclen, len(data))
+                        if len(data) < enclen:
+                            print(f"[AUDIO-DIAG] short data {len(data)} < {enclen}", flush=True)
+                            return
+                        if enclen % 16 != 0:
+                            print(f"[AUDIO-DIAG] unaligned enclen={enclen}", flush=True)
+                        n = enclen
                         n -= n % 16
                         if n > 0:
                             sk_str = session_key.decode("utf-8") if isinstance(session_key, (bytes, bytearray)) else str(session_key)
@@ -662,7 +627,7 @@ def _run_session(s, did, secret, state, timeout, start_seq):
                 mt, mf, body = rdr.next_frame(
                     timeout=max(0.05, end - time.time())
                 )
-            except TimeoutError:
+            except (TimeoutError, socket.timeout):
                 break
 
             process(mt, body)
@@ -683,7 +648,7 @@ def _run_session(s, did, secret, state, timeout, start_seq):
         (2645, b""),
         (P.CMD_VIDEOPLAY, b""),
         (P.CMD_VIDEOPLAY, P.pb_varint_field(1, 0) + P.pb_varint_field(2, 1)),
-        (P.CMD_SETRES, P.pb_varint_field(1, 0) + P.pb_varint_field(2, _dq_hd)),
+        (getattr(P, "CMD_SETRES", 2612), P.pb_varint_field(1, 0) + P.pb_varint_field(2, _dq_hd)),
     ]:
         s.sendall(P.build_ctrl(seq, cmd, pt))
         seq += 1
@@ -708,8 +673,7 @@ def _run_session(s, did, secret, state, timeout, start_seq):
     last_ping = 0.0
 
      #Send RPC 2614 once, can add varible delay after entering the main loop.
-    audio_at = time.time()
-#     + 10.0
+    audio_at = time.time() + 0.8
     audio_sent = False
 
     while not state.stop:
@@ -755,7 +719,7 @@ def _run_session(s, did, secret, state, timeout, start_seq):
             mt, mf, body = rdr.next_frame(timeout=0.3)
             process(mt, body)
 
-        except TimeoutError:
+        except (TimeoutError, socket.timeout):
             pass
 
         if time.time() - last_media > STALL:
@@ -777,7 +741,7 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
 </style>
 <style id="ptz-pad-fix">
 #ptz-pad { left: auto !important; right: 14px !important; bottom: 56px !important; }
-#btn-snd, #audio-btn, button[id*="snd"], button[id*="audio"] { display: inline-flex !important; align-items: center;  position: static !important; margin: 0 !important; }
+#enable-audio { display: inline-flex !important; align-items: center;  position: static !important; margin: 0 !important; }
 </style>
 </head>
 <body>
@@ -843,7 +807,7 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
   if (audioButton) {
     audioButton.onclick = async () => {
       try {
-        if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
+        if (!audio) var AC = window.AudioContext || window.webkitAudioContext; try { audio = new AC({sampleRate: 8000}); } catch(e) { audio = new AC(); }
         if (audio.state === "running") {
           if (aCtrl) { aCtrl.abort(); aCtrl = null; }
           await audio.suspend();
@@ -862,7 +826,8 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
   }
 })();
 </script>
-<div id="sd-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:10000;align-items:center;justify-content:center;padding:16px;"><div style="background:#1c1e24;color:#fff;border:1px solid #444;border-radius:14px;padding:18px;width:100%;max-width:360px;font-family:sans-serif;"><div style="display:flex;justify-content:space-between;margin-bottom:10px;"><b>&#128190; SD-&#1082;&#1072;&#1088;&#1090;&#1072;</b><span id="sd-x" style="font-size:22px;cursor:pointer;">&times;</span></div><div id="sd-t" style="background:#262932;padding:10px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:10px;">&#1054;&#1078;&#1080;&#1076;&#1072;&#1085;&#1080;&#1077;...</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;"><button id="sd-r" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128260; &#1048;&#1085;&#1092;&#1086;</button><button id="sd-d" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128197; &#1044;&#1085;&#1080;</button><button id="sd-o" type="button" style="padding:9px;border-radius:8px;border:1px solid #2ecc71;background:#1e5631;color:#fff;">&#9210; &#1047;&#1072;&#1087;&#1080;&#1089;&#1100; 30&#1089;</button><button id="sd-s" type="button" style="padding:9px;border-radius:8px;border:1px solid #888;background:#3a3f47;color:#fff;">&#9209; &#1057;&#1090;&#1086;&#1087;</button></div><button id="sd-f" type="button" style="width:100%;padding:9px;border-radius:8px;border:1px solid #e74c3c;background:#6e2323;color:#fff;">&#9888;&#65039; &#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD</button></div></div><script>(()=>{const m=document.getElementById("sd-m"),t=document.getElementById("sd-t"),upd=(p)=>fetch("/sd/info?poll="+(p?1:0),{cache:"no-store"}).then(r=>r.json()).then(d=>{const tot=d.total_mb?(d.total_mb/1024).toFixed(2)+" GB":"&#8212;",u=d.used_mb?(d.used_mb/1024).toFixed(2)+" GB":"0 MB",fr=(d.total_mb&&d.total_mb>=d.used_mb)?((d.total_mb-d.used_mb)/1024).toFixed(2)+" GB":"&#8212;";t.innerHTML="<b>&#1057;&#1090;&#1072;&#1090;&#1091;&#1089;:</b> "+d.last_msg+"<br><b>&#1042;&#1089;&#1077;&#1075;&#1086;:</b> "+tot+"<br><b>&#1047;&#1072;&#1085;&#1103;&#1090;&#1086; / &#1057;&#1074;&#1086;&#1073;&#1086;&#1076;&#1085;&#1086;:</b> "+u+" / "+fr+(Object.keys(d.raw||{}).length?"<br><small style=color:#aaa>RX: "+JSON.stringify(d.raw)+"</small>":"");});document.getElementById("btn-sd").onclick=()=>{m.style.display="flex";upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-x").onclick=()=>if (m && m.id && (m.id.includes("snd") || m.id.includes("audio"))) { m.innerHTML = "&#128266; &#1047;&#1074;&#1091;&#1082;: &#1042;&#1082;&#1083;"; } else { m.style.display = "none"; }document.getElementById("sd-r").onclick=()=>{upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-d").onclick=()=>fetch("/sd/days").then(()=>setTimeout(()=>upd(0),1200));document.getElementById("sd-o").onclick=()=>fetch("/sd/record?dur=30").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-s").onclick=()=>fetch("/sd/record?dur=0").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-f").onclick=()=>{if(confirm("&#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD-&#1082;&#1072;&#1088;&#1090;&#1091;?"))fetch("/sd/format").then(()=>setTimeout(()=>upd(0),1500));};})();</script><script>(()=>{const mm=[{l:"&#128680; &#1044;&#1074;&#1080;&#1078;&#1077;&#1085;&#1080;&#1077;: &#1042;&#1099;&#1082;&#1083;",v:0,bg:"rgba(0,0,0,.6)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1053;&#1080;&#1079;&#1082;",v:1,bg:"rgba(210,160,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1057;&#1088;&#1077;&#1076;",v:2,bg:"rgba(230,110,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1042;&#1099;&#1089;&#1086;&#1082;",v:3,bg:"rgba(210,40,40,.85)"}];let mi=0;const b=document.getElementById("btn-mot");if(b)b.onclick=()=>{mi=(mi+1)%mm.length;const m=mm[mi];fetch("/ctrl?act=motion&val="+m.v,{cache:"no-store"});b.innerHTML=m.l;b.style.background=m.bg;};})();</script><div id="nvr-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.84);z-index:99999;align-items:center;justify-content:center;padding:16px;">
+<div id="sd-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:10000;align-items:center;justify-content:center;padding:16px;"><div style="background:#1c1e24;color:#fff;border:1px solid #444;border-radius:14px;padding:18px;width:100%;max-width:360px;font-family:sans-serif;"><div style="display:flex;justify-content:space-between;margin-bottom:10px;"><b>&#128190; SD-&#1082;&#1072;&#1088;&#1090;&#1072;</b><span id="sd-x" style="font-size:22px;cursor:pointer;">&times;</span></div><div id="sd-t" style="background:#262932;padding:10px;border-radius:8px;font-size:13px;line-height:1.5;margin-bottom:10px;">&#1054;&#1078;&#1080;&#1076;&#1072;&#1085;&#1080;&#1077;...</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;"><button id="sd-r" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128260; &#1048;&#1085;&#1092;&#1086;</button><button id="sd-d" type="button" style="padding:9px;border-radius:8px;border:1px solid #4a90e2;background:#23466e;color:#fff;">&#128197; &#1044;&#1085;&#1080;</button><button id="sd-o" type="button" style="padding:9px;border-radius:8px;border:1px solid #2ecc71;background:#1e5631;color:#fff;">&#9210; &#1047;&#1072;&#1087;&#1080;&#1089;&#1100; 30&#1089;</button><button id="sd-s" type="button" style="padding:9px;border-radius:8px;border:1px solid #888;background:#3a3f47;color:#fff;">&#9209; &#1057;&#1090;&#1086;&#1087;</button></div><button id="sd-f" type="button" style="width:100%;padding:9px;border-radius:8px;border:1px solid #e74c3c;background:#6e2323;color:#fff;">&#9888;&#65039; &#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD</button></div></div><script>(()=>{const m=document.getElementById("sd-m"),t=document.getElementById("sd-t"),upd=(p)=>fetch("/sd/info?poll="+(p?1:0),{cache:"no-store"}).then(r=>r.json()).then(d=>{const tot=d.total_mb?(d.total_mb/1024).toFixed(2)+" GB":"-",u=d.used_mb?(d.used_mb/1024).toFixed(2)+" GB":"0 MB",fr=(d.total_mb&&d.total_mb>=d.used_mb)?((d.total_mb-d.used_mb)/1024).toFixed(2)+" GB":"-";t.innerHTML="<b>&#1057;&#1090;&#1072;&#1090;&#1091;&#1089;:</b> "+d.last_msg+"<br><b>&#1042;&#1089;&#1077;&#1075;&#1086;:</b> "+tot+"<br><b>&#1047;&#1072;&#1085;&#1103;&#1090;&#1086; / &#1057;&#1074;&#1086;&#1073;&#1086;&#1076;&#1085;&#1086;:</b> "+u+" / "+fr;});document.getElementById("btn-sd").onclick=()=>{m.style.display="flex";upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-x").onclick=()=>{m.style.display="none";};document.getElementById("sd-r").onclick=()=>{upd(1);setTimeout(()=>upd(0),1200);};document.getElementById("sd-d").onclick=()=>fetch("/sd/days").then(()=>setTimeout(()=>upd(0),1200));document.getElementById("sd-o").onclick=()=>fetch("/sd/record?dur=30").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-s").onclick=()=>fetch("/sd/record?dur=0").then(()=>setTimeout(()=>upd(0),1000));document.getElementById("sd-f").onclick=()=>{if(confirm("&#1060;&#1086;&#1088;&#1084;&#1072;&#1090;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100; SD?"))fetch("/sd/format").then(()=>setTimeout(()=>upd(0),1500));};})();</script>
+<div id="nvr-m" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.84);z-index:99999;align-items:center;justify-content:center;padding:16px;">
   <div style="background:#1c1e24;color:#fff;border:1px solid #444;border-radius:14px;padding:18px;width:100%;max-width:400px;max-height:85vh;display:flex;flex-direction:column;font-family:sans-serif;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <b>&#127902; NVR &#1040;&#1088;&#1093;&#1080;&#1074;</b>
@@ -883,33 +848,6 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
     <div id="nvr-list" style="overflow-y:auto;flex:1;background:#262932;border-radius:8px;padding:8px;font-size:13px;"></div>
   </div>
 </div>
-<script>
-(() => {
-  const m = document.getElementById("nvr-m");
-  const dIn = document.getElementById("nvr-dir");
-  const sIn = document.getElementById("nvr-seg");
-  const mIn = document.getElementById("nvr-max");
-  const lst = document.getElementById("nvr-list");
-  const tog = document.getElementById("nvr-tog");
-  const ld = () => fetch("/nvr/list", {cache: "no-store"}).then(r => r.json()).then(d => {
-    dIn.value = d.dir || "";
-    sIn.value = d.seg || 10;
-    mIn.value = d.max || 5120;
-    tog.textContent = d.enabled ? "REC: ON (Stop)" : "REC: OFF (Start)";
-    tog.style.background = d.enabled ? "#1e5631" : "#6e2323";
-    lst.innerHTML = (d.files && d.files.length)
-      ? d.files.map(f => "<div style=display:flex;justify-content:space-between;padding:6px;border-bottom:1px solid #333><span>" + (f.active ? "&#128308; " : "") + f.name + " (" + f.size_mb + " MB)</span><a href=/nvr/file?name=" + encodeURIComponent(f.name) + " style=color:#4da3ff;text-decoration:none;font-weight:bold>&#11015; TS</a></div>").join("")
-      : "<div style=color:#888;padding:8px>&#1047;&#1072;&#1087;&#1080;&#1089;&#1077;&#1081; &#1087;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090;</div>";
-  }).catch(() => { lst.innerHTML = "<div style=color:#f66;padding:8px>&#1054;&#1096;&#1080;&#1073;&#1082;&#1072; &#1079;&#1072;&#1075;&#1088;&#1091;&#1079;&#1082;&#1080; NVR</div>"; });
-
-  const bNvr = document.getElementById("btn-nvr");
-  if (bNvr) bNvr.addEventListener("click", (ev) => { ev.stopPropagation(); m.style.display = "flex"; ld(); });
-  document.getElementById("nvr-x").onclick = () => { m.style.display = "none"; };
-  document.getElementById("nvr-ref").onclick = ld;
-  tog.onclick = () => fetch("/nvr/toggle", {cache: "no-store"}).then(ld);
-  document.getElementById("nvr-sav").onclick = () => fetch("/nvr/save?dir=" + encodeURIComponent(dIn.value) + "&seg=" + encodeURIComponent(sIn.value) + "&max=" + encodeURIComponent(mIn.value), {cache: "no-store"}).then(() => { alert("Saved to .env"); ld(); });
-})();
-</script>
 <div id="hud-stat" style="position:fixed;bottom:14px;left:14px;z-index:9998;pointer-events:none;background:rgba(0,0,0,.65);border:1px solid rgba(255,255,255,.22);border-radius:8px;padding:6px 10px;color:#fff;font-family:monospace;font-size:12px;line-height:1.4;">
   <span id="hud-sig">&#128994; &#1057;&#1080;&#1075;&#1085;&#1072;&#1083;: ...</span> | <span id="hud-fps">0.0 FPS</span> | <span id="hud-kbps">0 Kbit/s</span>
 </div>
@@ -988,88 +926,146 @@ canvas { display:block; width:100%; height:100%; object-fit:contain; }
   <input id="wp" type="password" placeholder="&#1055;&#1072;&#1088;&#1086;&#1083;&#1100;" style="pointer-events:auto !important;width:41%;padding:6px;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#fff;">
   <button type="button" style="pointer-events:auto !important;padding:7px 10px;border:none;border-radius:7px;color:#fff;font-size:13px;cursor:pointer;background:#0284c7;" onclick="if(confirm('&#1057;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100; Wi-Fi?'))camExt('wifi',{ssid:ws.value,pwd:wp.value})">OK</button>
 </div>
-<button type="button" style="pointer-events:auto !important;padding:7px 10px;border:none;border-radius:7px;color:#fff;font-size:13px;cursor:pointer;width:100%;padding:9px;background:#dc2626;font-weight:bold;" onclick="if(confirm('&#1055;&#1077;&#1088;&#1077;&#1079;&#1072;&#1075;&#1088;&#1091;&#1079;&#1080;&#1090;&#1100; &#1082;&#1072;&#1084;&#1077;&#1088;&#1091;?'))camExt('reboot',{})">&#128260; &#1055;&#1077;&#1088;&#1077;&#1079;&#1072;&#1075;&#1088;&#1091;&#1079;&#1080;&#1090;&#1100; &#1082;&#1072;&#1084;&#1077;&#1088;&#1091;</button></div></div><script>function camExt(a, e){
-  const q = new URLSearchParams(Object.assign({act:a}, e)).toString();
-  const st = document.getElementById('ce-st');
-  if(st) st.textContent = '...';
-  fetch('/cam/ext?' + q, {cache:'no-store'}).then(r=>r.json()).then(d=>{
-    if(st) st.textContent = 'OK: ' + a; if(a==='osd'){const oc=document.getElementById('osd-clk');if(oc){oc.style.display=e.enable?'block':'none';if(!window._ot)window._ot=setInterval(()=>{oc.textContent=new Date().toLocaleString('ru-RU');},1000);}}
-    if(a==='reboot'||a==='wifi') document.getElementById('cam-ext-modal').style.display='none';
-  }).catch(()=>{ if(st) st.textContent = 'Err'; });
-}</script>
-<div id="osd-clk" style="display:none;position:fixed;bottom:62px;left:12px;color:#fff;background:rgba(0,0,0,.45);padding:2px 7px;border-radius:4px;font-family:monospace;font-size:13px;z-index:50;pointer-events:none;"></div>
-<script>
-window._irI = 0;
-window._irL = Array.of("&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;", "&#9728;&#65039; &#1048;&#1050;: &#1042;&#1099;&#1082;&#1083;", "&#127761; &#1048;&#1050;: &#1042;&#1082;&#1083;");
-window.uiIr = function(b) {
-  window._irI = (window._irI + 1) % 3;
-  b.innerHTML = window._irL.at(window._irI);
-  fetch("/ctrl?act=ir&val=" + window._irI, {cache: "no-store"}).catch(function(){});
+<button type="button" style="pointer-events:auto !important;padding:7px 10px;border:none;border-radius:7px;color:#fff;font-size:13px;cursor:pointer;width:100%;padding:9px;background:#dc2626;font-weight:bold;" onclick="if(confirm('&#1055;&#1077;&#1088;&#1077;&#1079;&#1072;&#1075;&#1088;&#1091;&#1079;&#1080;&#1090;&#1100; &#1082;&#1072;&#1084;&#1077;&#1088;&#1091;?'))camExt('reboot',{})">&#128260; &#1055;&#1077;&#1088;&#1077;&#1079;&#1072;&#1075;&#1088;&#1091;&#1079;&#1080;&#1090;&#1100; &#1082;&#1072;&#1084;&#1077;&#1088;&#1091;</button></div></div><script>
+window.applyOsd = function(on) {
+  var oc = document.getElementById("osd-clk");
+  if (!oc) return;
+  oc.style.display = on ? "block" : "none";
+  if (on) {
+    var tick = function() {
+      var d = new Date();
+      oc.textContent = d.toLocaleDateString("ru-RU") + " " + d.toLocaleTimeString("ru-RU");
+    };
+    tick();
+    if (!window._ot) window._ot = setInterval(tick, 1000);
+  } else if (window._ot) {
+    clearInterval(window._ot);
+    window._ot = null;
+  }
 };
-
-window._hd = false;
-window.uiRes = function(b) {
-  window._hd = !window._hd;
-  b.innerHTML = window._hd ? "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: HD" : "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD";
-  fetch("/ctrl?act=res&val=" + (window._hd ? 1 : 0), {cache: "no-store"}).catch(function(){});
+window.addEventListener("DOMContentLoaded", function(){ window.applyOsd(localStorage.getItem("a9_osd") === "1"); });
+setTimeout(function(){ window.applyOsd(localStorage.getItem("a9_osd") === "1"); }, 100);
+window._unusedOsd = function(on) {
+  var oc = document.getElementById("osd-clk");
+  if (!oc) return;
+  oc.style.display = on ? "block" : "none";
+  if (on) {
+    oc.textContent = new Date().toLocaleString("ru-RU");
+    if (!window._ot) window._ot = setInterval(function() { oc.textContent = new Date().toLocaleString("ru-RU"); }, 1000);
+  }
 };
-
-window._flI = parseInt(localStorage.getItem("a9_flip") || "0", 10) || 0;
-window._flL = Array.of(
-  "&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;",
-  "&#128260; &#1055;&#1086;&#1074;&#1086;&#1088;&#1086;&#1090; 180&#176;",
-  "&#8596; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1043;",
-  "&#8597; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1042;"
-);
-window._flT = Array.of("none", "rotate(180deg)", "scaleX(-1)", "scaleY(-1)");
-window.applyFlip = function(idx) {
-  var im = document.getElementById("mjpg");
-  var b = document.getElementById("btn-flip");
-  if (im) im.style.transform = window._flT.at(idx) || "none";
-  if (b) b.innerHTML = window._flL.at(idx);
-};
-window.uiFlip = function(b) {
-  window._flI = (window._flI + 1) % 4;
-  localStorage.setItem("a9_flip", String(window._flI));
-  window.applyFlip(window._flI);
-  fetch("/ctrl?act=flip&val=" + window._flI, {cache: "no-store"}).catch(function(){});
-};
-setTimeout(function(){ window.applyFlip(window._flI); }, 50);
-
-(function(){});
+window.applyOsd(localStorage.getItem("a9_osd") === "1");
+window.camExt = function(a, e) {
+  var q = new URLSearchParams(Object.assign({act: a}, e || {})).toString();
+  var st = document.getElementById("ce-st"); if (st) st.textContent = "...";
+  fetch("/cam/ext?" + q, {cache: "no-store"}).then(function(r) { return r.json(); }).then(function() {
+    if (st) st.textContent = "OK: " + a;
+    if (a === "osd") { var _on = Boolean(e && Number(e.enable)); localStorage.setItem("a9_osd", _on ? "1" : "0"); if (window.applyOsd) window.applyOsd(_on);
+      localStorage.setItem("a9_osd", e && e.enable ? "1" : "0");
+      window.applyOsd(!!(e && e.enable));
+    }
+    if (a === "reboot" || a === "wifi") document.getElementById("cam-ext-modal").style.display = "none";
+  }).catch(function() { if (st) st.textContent = "Err"; });
 };
 
 (function() {
-  var pad = document.getElementById("ptz-pad");
-  if (!pad) return;
-  var activeDir = null;
-  var sendPtz = function(dir) { fetch("/ctrl?act=" + dir, {cache: "no-store"}).catch(function(){}); };
-  pad.querySelectorAll("button[data-dir]").forEach(function(btn) {
-    var dir = btn.getAttribute("data-dir");
-    var start = function(e) {
-      e.preventDefault();
-      if (dir === "stop") { activeDir = null; sendPtz("stop"); return; }
-      activeDir = dir;
-      sendPtz(dir);
+  window._sndOn = false; window._audio = null; window._aCtrl = null; window._nextT = 0;
+  var abtn = document.getElementById("enable-audio");
+  function playPCM(buf) {
+    if (!window._sndOn || !window._audio) return;
+    var cnt = Math.floor(buf.byteLength / 2); if (!cnt) return;
+    var ab = window._audio.createBuffer(1, cnt, 8000);
+    ab.copyToChannel(Float32Array.from(new Int16Array(buf, 0, cnt), function(v) { return v / 32768; }), 0);
+    var src = window._audio.createBufferSource(); src.buffer = ab; src.connect(window._audio.destination);
+    var now = window._audio.currentTime; if (window._nextT < now || window._nextT > now + 0.35) window._nextT = now + 0.05;
+    src.start(window._nextT); window._nextT += ab.duration;
+  }
+  async function startAudio() {
+    window._aCtrl = new AbortController();
+    try {
+      var r = await fetch("/audio.pcm", {cache: "no-store", signal: window._aCtrl.signal});
+      var rd = r.body.getReader();
+      while (window._sndOn) { var res = await rd.read(); if (res.done || !window._sndOn) break; playPCM(res.value.buffer.slice(res.value.byteOffset, res.value.byteOffset + res.value.byteLength)); }
+    } catch (e) {}
+  }
+  if (abtn) {
+    abtn.innerHTML = "&#128263; &#1047;&#1074;&#1091;&#1082;";
+    abtn.onclick = async function(e) {
+      e.stopPropagation();
+      if (window._sndOn) {
+        window._sndOn = false;
+        if (window._aCtrl) { try { window._aCtrl.abort(); } catch(_) {} window._aCtrl = null; }
+        if (window._audio) { try { await window._audio.close(); } catch(_) {} window._audio = null; }
+        abtn.style.background = "rgba(0,0,0,.6)"; abtn.innerHTML = "&#128263; &#1047;&#1074;&#1091;&#1082;";
+      } else {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        try { window._audio = new AC({sampleRate: 8000}); } catch(_) { window._audio = new AC(); }
+        await window._audio.resume(); window._sndOn = true; window._nextT = 0;
+        abtn.style.background = "#16a34a"; abtn.innerHTML = "&#128266; &#1047;&#1074;&#1091;&#1082;";
+        startAudio();
+      }
     };
-    var stop = function(e) {
-      if (e) e.preventDefault();
-      if (activeDir && dir !== "stop") { activeDir = null; sendPtz("stop"); }
-    };
-    btn.addEventListener("pointerdown", start);
-    btn.addEventListener("pointerup", stop);
-    btn.addEventListener("pointercancel", stop);
-    btn.addEventListener("pointerleave", stop);
-  });
-  var im = document.getElementById("mjpg");
-  if (im) {
-    im.onerror = function() { setTimeout(function() { im.src = "/stream.mjpg?t=" + Date.now(); }, 600); };
-    document.addEventListener("visibilitychange", function() {
-      if (!document.hidden) im.src = "/stream.mjpg?t=" + Date.now();
-    });
   }
 })();
 </script>
+<script>
+window._irI = 0; window._irL = Array.of("&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;", "&#9728;&#65039; &#1048;&#1050;: &#1042;&#1099;&#1082;&#1083;", "&#127761; &#1048;&#1050;: &#1042;&#1082;&#1083;");
+window.uiIr = function(b) { window._irI = (window._irI + 1) % 3; b.innerHTML = window._irL.at(window._irI); fetch("/ctrl?act=ir&val=" + window._irI, {cache: "no-store"}).catch(function(){}); };
+window._hd = false;
+window.uiRes = function(b) { window._hd = !window._hd; b.innerHTML = window._hd ? "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: HD" : "&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD"; fetch("/ctrl?act=res&val=" + (window._hd ? 1 : 0), {cache: "no-store"}).catch(function(){}); };
+window._flI = parseInt(localStorage.getItem("a9_flip") || "0", 10) || 0;
+window._flL = Array.of("&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;", "&#128260; &#1055;&#1086;&#1074;&#1086;&#1088;&#1086;&#1090; 180&#176;", "&#8596; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1043;", "&#8597; &#1047;&#1077;&#1088;&#1082;&#1072;&#1083;&#1086; &#1042;");
+window._flT = Array.of("none", "rotate(180deg)", "scaleX(-1)", "scaleY(-1)");
+window.applyFlip = function(idx) { var im = document.getElementById("mjpg"), b = document.getElementById("btn-flip"); if (im) im.style.transform = window._flT.at(idx) || "none"; if (b) b.innerHTML = window._flL.at(idx); };
+window.uiFlip = function(b) { window._flI = (window._flI + 1) % 4; localStorage.setItem("a9_flip", String(window._flI)); window.applyFlip(window._flI); };
+window.applyFlip(window._flI);
+
+(function() {
+  var mm = Array.of({l:"&#128680; &#1044;&#1074;&#1080;&#1078;&#1077;&#1085;&#1080;&#1077;: &#1042;&#1099;&#1082;&#1083;",v:0,bg:"rgba(0,0,0,.6)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1053;&#1080;&#1079;&#1082;",v:1,bg:"rgba(210,160,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1057;&#1088;&#1077;&#1076;",v:2,bg:"rgba(230,110,20,.85)"},{l:"&#128680; &#1044;&#1074;&#1080;&#1078;: &#1042;&#1099;&#1089;&#1086;&#1082;",v:3,bg:"rgba(210,40,40,.85)"});
+  var mi = 0, bm = document.getElementById("btn-mot");
+  if (bm) bm.onclick = function() { mi = (mi + 1) % mm.length; var cur = mm.at(mi); fetch("/ctrl?act=motion&val=" + cur.v, {cache: "no-store"}).catch(function(){}); bm.innerHTML = cur.l; bm.style.background = cur.bg; };
+
+  var nm = document.getElementById("nvr-m"), bNvr = document.getElementById("btn-nvr"), xNvr = document.getElementById("nvr-x"), dIn = document.getElementById("nvr-dir"), sIn = document.getElementById("nvr-seg"), mIn = document.getElementById("nvr-max"), lst = document.getElementById("nvr-list"), tog = document.getElementById("nvr-tog"), sav = document.getElementById("nvr-sav"), ref = document.getElementById("nvr-ref");
+  var ldNvr = function() {
+    fetch("/nvr/list", {cache: "no-store"}).then(function(r) { return r.json(); }).then(function(d) {
+      if (dIn) dIn.value = d.dir || ""; if (sIn) sIn.value = d.seg || 10; if (mIn) mIn.value = d.max || 5120;
+      if (tog) { tog.textContent = d.enabled ? "REC: ON (Stop)" : "REC: OFF (Start)"; tog.style.background = d.enabled ? "#1e5631" : "#6e2323"; }
+      if (lst) lst.innerHTML = (d.files && d.files.length) ? d.files.map(function(f) { return "<div style='display:flex;justify-content:space-between;padding:6px;border-bottom:1px solid #333'><span>" + (f.active ? "&#128308; " : "") + f.name + " (" + f.size_mb + " MB)</span><a href='/nvr/file?name=" + encodeURIComponent(f.name) + "' style='color:#4da3ff;text-decoration:none;font-weight:bold'>&#11015; TS</a></div>"; }).join("") : "<div style='color:#888;padding:8px'>&#1047;&#1072;&#1087;&#1080;&#1089;&#1077;&#1081; &#1087;&#1086;&#1082;&#1072; &#1085;&#1077;&#1090;</div>";
+    }).catch(function(){});
+  };
+  if (bNvr && nm) bNvr.onclick = function() { nm.style.display = "flex"; ldNvr(); };
+  if (xNvr && nm) xNvr.onclick = function() { nm.style.display = "none"; };
+  if (tog) tog.onclick = function() { fetch("/nvr/toggle", {cache: "no-store"}).then(ldNvr).catch(function(){}); };
+  if (ref) ref.onclick = ldNvr;
+  if (sav) sav.onclick = function() { fetch("/nvr/save?dir=" + encodeURIComponent(dIn.value) + "&seg=" + encodeURIComponent(sIn.value) + "&max=" + encodeURIComponent(mIn.value), {cache: "no-store"}).then(ldNvr).catch(function(){}); };
+
+  var pad = document.getElementById("ptz-pad");
+  if (pad) {
+    var activeDir = null, sendPtz = function(dir) { fetch("/ctrl?act=" + dir, {cache: "no-store"}).catch(function(){}); };
+    pad.querySelectorAll("button[data-dir]").forEach(function(btn) {
+      var dir = btn.getAttribute("data-dir");
+      var start = function(e) { if (e.cancelable) e.preventDefault(); if (dir === "stop") { activeDir = null; sendPtz("stop"); return; } if (activeDir === dir) return; activeDir = dir; sendPtz(dir); };
+      var stop = function(e) { if (e && e.cancelable) e.preventDefault(); if (activeDir && dir !== "stop") { activeDir = null; sendPtz("stop"); } };
+      btn.addEventListener("pointerdown", start); btn.addEventListener("pointerup", stop); btn.addEventListener("pointercancel", stop);
+      btn.addEventListener("touchstart", start, {passive: false}); btn.addEventListener("touchend", stop);
+    });
+  }
+
+  setInterval(function() {
+    var t0 = performance.now();
+    fetch("/telemetry", {cache: "no-store"}).then(function(r) { return r.json(); }).then(function(d) {
+      var ms = Math.round(performance.now() - t0);
+      var q = ms < 60 ? "&#1054;&#1090;&#1083;&#1080;&#1095;&#1085;&#1099;&#1081;" : (ms < 180 ? "&#1057;&#1088;&#1077;&#1076;&#1085;&#1080;&#1081;" : "&#1057;&#1083;&#1072;&#1073;&#1099;&#1081;");
+      var dot = ms < 60 ? "#4ade80" : (ms < 180 ? "#facc15" : "#f87171");
+      var st = document.getElementById("hud-stat");
+      if (st) st.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + dot + ';margin-right:6px;"></span>' + q + ' (' + ms + ' ms) | ' + (d.fps || 0) + ' FPS | ' + (d.kbps || 0) + ' Kbit/s';
+      var rb = document.getElementById("rec-badge");
+      if (rb) rb.style.display = d.rec ? "flex" : "none";
+    }).catch(function(){});
+  }, 1000);
+})();
+</script>
+<div id="osd-clk" style="display:none;position:fixed;bottom:52px;left:14px;z-index:9998;color:#fff;background:rgba(0,0,0,.65);border:1px solid rgba(255,255,255,.25);padding:4px 9px;border-radius:6px;font-family:monospace;font-size:13px;font-weight:bold;pointer-events:none;"></div>
 </body>
 </html>
 """
@@ -1170,6 +1166,8 @@ def make_handler(state, first_timeout, max_age):
                 # not on number of frames received.
                 pts = int((time.monotonic() - stream_start) * 10)
                 pts = max(pts, last_video_pts + 1)
+                if last_video_pts >= 0 and pts - last_video_pts > 3:
+                    pts = last_video_pts + 3
 
                 frame.pts = pts
                 frame.time_base = Fraction(1, 10)
@@ -1260,7 +1258,7 @@ def make_handler(state, first_timeout, max_age):
                 return
             finally:
                 if self.path in ("/", "/live.mp4", "/live.ts", "/stream.mjpg") or self.path.startswith("/?"):
-                    print(f"[{time.strftime('%H:%M:%S')}] [HTTP-DISC] client={self.client_address} path={self.path}", flush=True)
+                    print(f"[{time.strftime('%H:%M:%S')}] [HTTP-DISC] client={_cip} path={self.path}", flush=True)
                 state.release_client()
         def _do_GET_inner(self):
         
@@ -1367,7 +1365,7 @@ def make_handler(state, first_timeout, max_age):
 
             if self.path == "/telemetry":
                 import json
-                _age = round(time.time() - getattr(state, "frame_ts", getattr(state, "_stat_ts", time.time())), 1)
+                _age = round(time.time() - getattr(state, "last_frame_ts", 0.0) or getattr(state, "_stat_ts", time.time()), 1)
                 _tb = json.dumps({
                     "fps": state.fps_val,
                     "kbps": state.kbps_val,
@@ -1432,7 +1430,7 @@ def make_handler(state, first_timeout, max_age):
                     md = int(qs.get("mode", ["0"])[0])
                     if md in (2, 3): state.push_cmd(2664, P.pb_varint_field(2, 34))
                     elif md == 1: state.push_cmd(2664, P.pb_varint_field(2, 35))
-                    else: state.push_cmd(2664, P.pb_varint_field(2, 35)); state.push_cmd(P.CMD_NIGHT, P.pb_varint_field(2, 0))
+                    else: state.push_cmd(2664, P.pb_varint_field(2, 35)); state.push_cmd(getattr(P, "CMD_NIGHT", 2642), P.pb_varint_field(2, 0))
                 elif act == "osd":
                     en = int(qs.get("enable", ["1"])[0])
                     state.push_cmd(2649, P.pb_varint_field(1, 0) + _pb_b(2, P.pb_varint_field(1, en) + _pb_b(2, b"A9") + P.pb_varint_field(5, en)))
@@ -1503,9 +1501,9 @@ def make_handler(state, first_timeout, max_age):
                 if act in ptz_map:
                     state.push_cmd(2664, P.pb_varint_field(2, ptz_map[act])); _ptz_track(ptz_map[act])
                 elif act == "ir":
-                    state.push_cmd(P.CMD_NIGHT, P.pb_varint_field(2, val))
+                    state.push_cmd(getattr(P, "CMD_NIGHT", 2642), P.pb_varint_field(2, val))
                 elif act == "res":
-                    state.push_cmd(P.CMD_SETRES, P.pb_varint_field(2, val))
+                    state.push_cmd(getattr(P, "CMD_SETRES", 2612), P.pb_varint_field(2, val))
                 elif act == "motion":
                     if NVR:
                         NVR.set_motion(int(next(iter(qs.get("val", ("0",))))))
@@ -1544,7 +1542,7 @@ def make_handler(state, first_timeout, max_age):
                     )
                     _cam_did = (state.status or {}).get("did") or "PPFT0302D37F51CC9A"
                     did_b = _cam_did.encode("utf-8")
-                    base_cmd = P.pb_varint_field(1, cid_num) + b"\x12\x03" + bytes([p0, 0, 0])
+                    _arr = P.enc_varint(p0) + b"\x00\x00"; base_cmd = P.pb_varint_field(1, cid_num) + b"\x12" + P.enc_varint(len(_arr)) + _arr
                     ppiot = (
                         P.pb_varint_field(1, 1)
                         + b"\x12" + _enc_vi(len(did_b)) + did_b
@@ -1562,7 +1560,7 @@ def make_handler(state, first_timeout, max_age):
                         inner = P.pb_varint_field(1, dpid) + b"\x3a\x01" + bytes([val])
                     else:
                         inner = P.pb_varint_field(1, dpid) + P.pb_varint_field(vfield, val)
-                    outer = b"\x0a" + bytes([len(inner)]) + inner
+                    outer = b"\x0a" + P.enc_varint(len(inner)) + inner
                     state.push_cmd(2633, outer)
                 elif act == "raw":
                     c_num = int(qs.get("cmd", ["0"])[0])
@@ -1695,27 +1693,13 @@ def resolve_creds(a):
     )
 
 def _kill_previous_instances():
-    import os, signal, time
-    my_pid = os.getpid()
-    killed = 0
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
-        if pid == my_pid:
-            continue
-        try:
-            cmd = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="ignore")
-            if "a9_mjpeg_server.py" in cmd:
-                os.kill(pid, signal.SIGKILL)
-                killed += 1
-        except Exception:
-            pass
-    if killed:
-        print(f"[*] Завершено предыдущих копий сервера: {killed}", flush=True)
-        time.sleep(0.5)
+    pass
 
 def main():
+    global NVR
+    import signal as _sig
+    _sig.signal(_sig.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    threading.Thread(target=_patrol_loop, daemon=True).start()
 
     _kill_previous_instances()
     ap = argparse.ArgumentParser(
@@ -1815,9 +1799,11 @@ def main():
         )
 
     try:
-        import nvr
-
-        import nvr as _nvr; global NVR; NVR = _nvr.NVRRecorder()
+        try:
+            import nvr as _nvr
+            NVR = _nvr.NVRRecorder()
+        except Exception as _ne:
+            print(f'[NVR] Disabled: {_ne}', flush=True)
         httpd.serve_forever()
     except KeyboardInterrupt:
         sys.stderr.write("\n[shutdown] Ctrl+C received\n")
