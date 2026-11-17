@@ -207,7 +207,7 @@ def make_handler(state, first_timeout, max_age):
 
                 last_video = 0
                 with state.audio_cond:
-                    last_audio = state.audio_seq
+                    last_audio = state.audio_seq - len(state.audio_chunks)
 
                 try:
                     while not state.stop:
@@ -217,6 +217,7 @@ def make_handler(state, first_timeout, max_age):
 
                         if jpg is not None:
                             send_record(1, time.monotonic(), jpg)
+                            state.tick_stat(len(jpg), True)
 
                         with state.audio_cond:
                             new_audio = [
@@ -296,10 +297,7 @@ def make_handler(state, first_timeout, max_age):
                     with _PTZ_LOCK:
                         _PATROL["on"] = qs.get("on", ["false"])[0] in ("true", "1")
                         if "sec" in qs: _PATROL["sec"] = max(5, int(qs["sec"][0]))
-                    ep = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-                    ls = [l for l in open(ep, encoding="utf-8") if not l.startswith(("PATROL_ON=", "PATROL_SEC="))] if os.path.exists(ep) else []
-                    ls += [f"PATROL_ON={1 if _PATROL['on'] else 0}\n", f"PATROL_SEC={_PATROL['sec']}\n"]
-                    open(ep, "w", encoding="utf-8").writelines(ls)
+                    _save_env_kv({"PATROL_ON": "1" if _PATROL["on"] else "0", "PATROL_SEC": str(_PATROL["sec"])})
                     if os.environ.get("A9_DEBUG") == "1": print(f"[PTZ-PTS] Патруль={_PATROL['on']}, пауза={_PATROL['sec']}с, точки={list(_PTZ_POS.pts.keys())}", flush=True)
                 elif act == "light":
                     md = int(qs.get("mode", ["0"])[0])

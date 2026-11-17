@@ -19,18 +19,18 @@ Stdlib only (pure-Python AES fallback via a9_proto), so it runs with no pip.
 WARNING: the recovered secret is a device credential. Keep it private; do not commit it.
 The camera handing it out to any unauthenticated UDP sender is a real weakness.
 """
-import sys, socket, time, os, argparse, gzip, json, tempfile
+import sys, socket, time, os, argparse, gzip, json, tempfile, io, struct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find siblings under -I / any cwd
 import a9_proto as P
 
-PORT = P.PORT
-UDP_PREFIX = P.UDP_PREFIX
+PORT = getattr(P, "PORT", 20190)
+UDP_PREFIX = getattr(P, "UDP_PREFIX", b"\x51\x70")
 CONFIG_DEFAULT = "a9_camera.json"
 CMD_DEVINFO = 2600            # discovery / device-info command
 
 def ping_packet():
     """8-byte discovery ping: 0x5170 + CTRL(0x48) + varint(len) + 'cmd 2600, rpc0, empty'."""
-    body = b"\x01" + b"\xa8\x14" + b"\x0c"      # seq=1, cmd=2600 (varint a8 14), flag=0c
+    body = b"\x01" + P.enc_varint(CMD_DEVINFO) + b"\x0c"
     return UDP_PREFIX + b"\x48" + bytes([len(body)]) + body
 
 def parse_reply(data):
@@ -45,17 +45,36 @@ def parse_reply(data):
             return None
         f = P.pb_parse(pt)
         def s(field):
-            v = f.get(field, [None])[0]
-            return v.decode("utf-8", "replace") if isinstance(v, bytes) else v
+            vals = f.get(field)
+            v = vals[0] if vals else None
+            if v is None:
+                return None
+            if isinstance(v, bytes):
+                return v.decode("utf-8", "replace")
+            return str(v)
+        
         skill = None
         if 9 in f and isinstance(f[9][0], bytes) and f[9][0][:2] == b"\x1f\x8b":
-            try: skill = json.loads(gzip.decompress(f[9][0]))
-            except Exception: skill = None
+            try: 
+                with gzip.GzipFile(fileobj=io.BytesIO(f[9][0])) as gz:
+                    skill = json.loads(gz.read(10_000_000))
+            except Exception: 
+                skill = None
+                
         did = s(1)
         if not did:
             return None
+            
+        port_vals = f.get(4)
+        port_val = port_vals[0] if port_vals else PORT
+        if isinstance(port_val, bytes):
+            try: port_val = int(port_val)
+            except (ValueError, TypeError): port_val = PORT
+        elif not isinstance(port_val, int):
+            port_val = PORT
+
         return {"did": did, "ip": s(2), "netmask": s(3),
-                "port": f.get(4, [PORT])[0], "fw": s(5), "secret": s(8), "skill": skill}
+                "port": port_val, "fw": s(5), "secret": s(8), "skill": skill}
     except Exception:
         return None
 
@@ -85,7 +104,7 @@ def discover(ip=None, wait=3.0, rounds=2):
                     dev["reported_ip"] = dev.get("ip")   # self-reported (may be stale)
                     dev["src_ip"] = addr[0]              # actual reply source
                     dev["ip"] = addr[0]                  # authoritative for connecting
-                    found[dev["did"]] = dev
+                    found.setdefault(dev["did"], dev)
             if found and ip:
                 break
     finally:
@@ -93,14 +112,12 @@ def discover(ip=None, wait=3.0, rounds=2):
     return list(found.values())
 
 def select_one(devs, did_filter=None):
-    """Pick exactly one camera, strictly.
-    - no cameras       -> SystemExit
-    - did_filter given -> must match exactly, else SystemExit (never silent fallback)
-    - no filter, one   -> that one
-    - no filter, many  -> SystemExit asking for --did"""
+    """Pick exactly one camera, strictly."""
     if not devs:
         raise SystemExit("no cameras answered discovery (same network/AP?)")
     if did_filter:
+        if isinstance(did_filter, bytes):
+            did_filter = did_filter.decode("utf-8", "replace")
         m = [d for d in devs if d.get("did") == did_filter]
         if not m:
             raise SystemExit(f"--did {did_filter} not found. Discovered: "
@@ -114,13 +131,12 @@ def select_one(devs, did_filter=None):
 def creds_from_discovery(ip=None, did_filter=None, wait=3.0):
     """Run discovery and return (did_bytes, secret_bytes, ip) for the matching camera."""
     dev = select_one(discover(ip, wait=wait), did_filter)
-    did = dev["did"].encode() if dev.get("did") else None
-    secret = dev["secret"].encode() if dev.get("secret") else None
+    did = dev["did"].encode("utf-8", "replace") if dev.get("did") else None
+    secret = dev["secret"].encode("utf-8", "replace") if dev.get("secret") else None
     return did, secret, dev.get("ip")
 
 def save_config(path, dev):
-    """Write a camera's connection details to JSON the client can reuse. Contains the
-    device credential: created 0600 from the start and written atomically."""
+    """Write a camera's connection details to JSON."""
     cfg = {"did": dev.get("did"), "ip": dev.get("ip"), "port": dev.get("port", PORT),
            "secret": dev.get("secret"), "fw": dev.get("fw")}
     tmp = None
@@ -129,6 +145,8 @@ def save_config(path, dev):
         with os.fdopen(fd, "w") as f:
             json.dump(cfg, f, indent=2)
         os.replace(tmp, path)
+        try: os.chmod(path, 0o600)
+        except OSError: pass
     except OSError as e:
         raise SystemExit(f"could not write config {path}: {e}")
     finally:
@@ -186,9 +204,9 @@ def main():
     if not devs:
         sys.exit("[!] no cameras answered. Check you're on the same network/AP.")
     if a.save_config:
-        dev = select_one(devs, a.did)            # strict: exact match / require --did if ambiguous
+        dev = select_one(devs, a.did)
         save_config(a.save_config, dev)
-        print(f"[*] wrote {a.save_config} for {dev['did']} (contains the secret; 0600, keep local)")
+        print(f"[*] wrote {a.save_config} for {dev['did']} (contains the secret; keep local)")
     for d in devs:
         print(f"\nDID       : {d['did']}")
         print(f"IP:port   : {d.get('ip')}:{d.get('port')}   (actual, from reply source)")
