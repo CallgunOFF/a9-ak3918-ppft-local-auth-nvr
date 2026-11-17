@@ -57,7 +57,9 @@ from socketserver import ThreadingMixIn
 import a9_proto as P
 import a9_discover as D
 import nvr as _nvr
-CMD_PSP_ADD, CMD_PSP_CALL, CMD_PSP_LIST, CMD_PSP_DEL = 2666, 2667, 2668, 2669
+CMD_PSP_ADD, CMD_PSP_DEL, CMD_PSP_LIST, CMD_PSP_CALL = 2643, 2644, 2645, 2646
+CMD_CRUISE_SET, CMD_CRUISE_GET = 2651, 2652
+CMD_LED_SET, CMD_LED_GET = 2633, 2634
 CMD_OSD_GET, CMD_OSD_SET = 2648, 2649
 CMD_WIFI_GET, CMD_WIFI_SET = 2661, 2662
 CMD_REBOOT = 2670
@@ -80,6 +82,7 @@ from web_ui import VIEWER
 
 def make_handler(state, first_timeout, max_age):
     class H(BaseHTTPRequestHandler):
+        disable_nagle_algorithm = True
 
         def log_message(self, *a):
             pass
@@ -280,6 +283,7 @@ def make_handler(state, first_timeout, max_age):
                 if act == "ptz_cal":
                     with _PTZ_LOCK: _PATROL["on"] = False
                     _save_env_kv({"PATROL_ON": "0"})
+                    state.push_cmd(2651, P.pb_varint_field(2, 1 if _PATROL["on"] else 0) + P.pb_varint_field(3, int(_PATROL["sec"])))
                     threading.Thread(target=_ptz_calibrate, args=(state,), daemon=True).start()
                 elif act == "ptz_home_set":
                     hx, hy = _ptz_save_slot("home")
@@ -289,10 +293,13 @@ def make_handler(state, first_timeout, max_age):
                     _save_env_kv({"PATROL_ON": "0"})
                     threading.Thread(target=_ptz_park_home, args=(state,), daemon=True).start()
                 elif act == "psp_add":
+                    state.push_cmd(2643, P.pb_varint_field(2, sid) + _pb_b(3, f"T{sid}".encode()))
                     px, py = _ptz_save_slot(str(sid))
                     if os.environ.get("A9_DEBUG") == "1": print(f"[PTZ-PTS] Записана точка T{sid}: X={px}с, Y={py}с", flush=True)
                 elif act == "psp_call":
-                    threading.Thread(target=_ptz_goto, args=(_get_st(), str(sid)), daemon=True).start()
+                    state.push_cmd(2646, P.pb_varint_field(2, sid))
+                    if os.environ.get("PTZ_SOFTWARE_FALLBACK", "0") == "1":
+                        threading.Thread(target=_ptz_goto, args=(_get_st(), str(sid)), daemon=True).start()
                 elif act == "patrol":
                     with _PTZ_LOCK:
                         _PATROL["on"] = qs.get("on", ["false"])[0] in ("true", "1")
@@ -300,21 +307,30 @@ def make_handler(state, first_timeout, max_age):
                     _save_env_kv({"PATROL_ON": "1" if _PATROL["on"] else "0", "PATROL_SEC": str(_PATROL["sec"])})
                     if os.environ.get("A9_DEBUG") == "1": print(f"[PTZ-PTS] Патруль={_PATROL['on']}, пауза={_PATROL['sec']}с, точки={list(_PTZ_POS.pts.keys())}", flush=True)
                 elif act == "light":
-                    md = int(qs.get("mode", ["0"])[0])
-                    if md in (2, 3): state.push_cmd(2664, P.pb_varint_field(2, 34))
-                    elif md == 1: state.push_cmd(2664, P.pb_varint_field(2, 35))
-                    else: state.push_cmd(2664, P.pb_varint_field(2, 35)); state.push_cmd(getattr(P, "CMD_NIGHT", 2642), P.pb_varint_field(2, 0))
+                    md = int(next(iter(qs.get("mode", ("0",)))))
+                    if md in (2, 3):
+                        state.push_cmd(2635, P.pb_varint_field(2, 1))
+                        state.push_cmd(2633, P.pb_varint_field(2, 1))
+                    else:
+                        state.push_cmd(2635, P.pb_varint_field(2, 2))
+                        state.push_cmd(2633, P.pb_varint_field(2, 0))
                 elif act == "osd":
                     _oen = str(int(next(iter(qs.get("enable", ("0",)))))); os.environ["CAM_OSD"] = _oen; _save_env_kv({"CAM_OSD": _oen})
                     en = int(qs.get("enable", ["1"])[0])
                     state.push_cmd(2649, P.pb_varint_field(1, 0) + _pb_b(2, P.pb_varint_field(1, en) + _pb_b(2, b"A9") + P.pb_varint_field(5, en)))
                 elif act == "wifi" and qs.get("ssid", [""])[0]:
-                    state.push_cmd(2662, P.pb_varint_field(1, 0) + _pb_b(2, qs["ssid"][0].encode()) + _pb_b(3, qs.get("pwd", [""])[0].encode()) + _pb_b(4, b"RU"))
+                    state.push_cmd(2602, _pb_b(2, qs["ssid"][0].encode()) + _pb_b(3, qs.get("pwd", [""])[0].encode()) + _pb_b(4, b"RU"))
                 elif act == "freq":
                     _fhz = str(int(next(iter(qs.get("hz", ("50",)))))); os.environ["CAM_FREQ"] = _fhz; _save_env_kv({"CAM_FREQ": _fhz})
                     hz = int(str(qs.get("hz", "50")).strip("[]'\""))
-                    state.push_cmd(2639, P.pb_varint_field(1, 0) + P.pb_varint_field(2, hz))
-                elif act == "reboot": state.push_cmd(2670, P.pb_varint_field(1, 0))
+                    state.push_cmd(2658, P.pb_varint_field(2, hz))
+                elif act == "led":
+                    _lv = int(next(iter(qs.get("val", ("0",)))))
+                    os.environ["CAM_LED"] = str(_lv)
+                    _save_env_kv({"CAM_LED": str(_lv)})
+                    state.push_cmd(2633, P.pb_varint_field(2, _lv))
+
+                elif act == "reboot": state.push_cmd(2647, P.pb_varint_field(1, 0))
                 self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b'{"ok":true}')
                 return
             if self.path.startswith("/nvr/"):
@@ -341,6 +357,22 @@ def make_handler(state, first_timeout, max_age):
                                 self.wfile.write(ch)
                         return
                 self.send_response(404); self.end_headers(); return
+            if self.path.startswith("/wifi/scan"):
+                u = urlparse(self.path); qs = parse_qs(u.query)
+                if next(iter(qs.get("poll", ("0",)))) == "1":
+                    state.push_cmd(2603, b"")
+                    state.push_cmd(2601, b"")
+                body = json.dumps({
+                    "cur": getattr(state, "wifi_cur", ""),
+                    "aps": list(getattr(state, "wifi_aps", ()))
+                }, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path.startswith("/sd/"):
                 import datetime
                 u=urlparse(self.path); qs=parse_qs(u.query)
@@ -372,7 +404,7 @@ def make_handler(state, first_timeout, max_age):
                 if act in ptz_map:
                     state.push_cmd(2664, P.pb_varint_field(2, ptz_map[act])); _ptz_track(ptz_map[act])
                 elif act == "ir":
-                    state.push_cmd(getattr(P, "CMD_NIGHT", 2642), P.pb_varint_field(2, val))
+                    state.push_cmd(2635, P.pb_varint_field(2, {0: 3, 1: 2, 2: 1}.get(val, 3)))
                 elif act == "res":
                     state.push_cmd(getattr(P, "CMD_SETRES", 2612), P.pb_varint_field(2, val))
                 elif act == "motion":
@@ -382,8 +414,7 @@ def make_handler(state, first_timeout, max_age):
                     state.push_cmd(2637, P.pb_varint_field(1, 0) + P.pb_varint_field(2, mv))
                 elif act == "flip":
                     fval = int(next(iter(qs.get("val", ("1",)))))
-                    state.push_cmd(2646, P.pb_varint_field(1, 0) + P.pb_varint_field(2, fval))
-                    state.push_cmd(2656, P.pb_varint_field(1, 0) + P.pb_varint_field(2, fval))
+                    state.push_cmd(2613, P.pb_varint_field(2, fval))
                 elif act == "led_full":
                     ch = int(qs.get("ch", ["0"])[0])
                     md = int(qs.get("mode", ["1"])[0])
@@ -586,6 +617,8 @@ def main():
     global NVR
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     start_patrol_thread()
+
+
 
     _kill_previous_instances()
     ap = argparse.ArgumentParser(

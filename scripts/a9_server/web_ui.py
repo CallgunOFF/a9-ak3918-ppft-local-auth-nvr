@@ -255,11 +255,44 @@ window.toggleFs = function() {
 <div style="margin:8px 0;padding:10px;background:#0f172a;border:1px solid #334155;border-radius:10px;">
   <div style="margin:8px 0;padding:10px;background:#0f172a;border:1px solid #334155;border-radius:10px;"><div style="font-size:13px;font-weight:bold;color:#38bdf8;margin-bottom:8px;">&#9881; &#1053;&#1072;&#1089;&#1090;&#1088;&#1086;&#1081;&#1082;&#1080; &#1080;&#1079;&#1086;&#1073;&#1088;&#1072;&#1078;&#1077;&#1085;&#1080;&#1103; &#1080; &#1076;&#1072;&#1090;&#1095;&#1080;&#1082;&#1086;&#1074;</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"><button id="btn-ir" type="button" onclick="uiIr(this)" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#127769; &#1048;&#1050;: &#1040;&#1074;&#1090;&#1086;</button><button id="btn-res" type="button" onclick="uiRes(this)" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128250; &#1050;&#1072;&#1095;&#1077;&#1089;&#1090;&#1074;&#1086;: SD</button><button id="btn-flip" type="button" onclick="uiFlip(this)" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128260; &#1053;&#1086;&#1088;&#1084;&#1072;&#1083;&#1100;&#1085;&#1099;&#1081;</button>
 <button id="btn-mot" type="button" style="pointer-events:auto;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.6);color:#fff;font-size:14px;">&#128680; &#1044;&#1074;&#1080;&#1078;&#1077;&#1085;&#1080;&#1077;: &#1042;&#1099;&#1082;&#1083;</button></div></div>
-<div style="margin-bottom:10px;padding:8px;background:#0f172a;border-radius:8px;">
-  <input id="ws" placeholder="Wi-Fi SSID" style="pointer-events:auto !important;width:42%;padding:6px;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#fff;">
-  <input id="wp" type="password" placeholder="&#1055;&#1072;&#1088;&#1086;&#1083;&#1100;" style="pointer-events:auto !important;width:41%;padding:6px;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#fff;">
-  <button type="button" style="pointer-events:auto !important;padding:7px 10px;border:none;border-radius:7px;color:#fff;font-size:13px;cursor:pointer;background:#0284c7;" onclick="if(confirm('&#1057;&#1084;&#1077;&#1085;&#1080;&#1090;&#1100; Wi-Fi?'))camExt('wifi',{ssid:ws.value,pwd:wp.value})">OK</button>
+<div id="wifi-scan-box" style="margin-bottom:10px;padding:10px;background:#0f172a;border:1px solid #334155;border-radius:8px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <b style="font-size:13px;color:#38bdf8;">&#128246; Wi-Fi &#1082;&#1072;&#1084;&#1077;&#1088;&#1099;</b>
+    <button id="btn-wscan" type="button" style="pointer-events:auto !important;padding:5px 10px;border:none;border-radius:6px;background:#0284c7;color:#fff;font-size:12px;font-weight:bold;cursor:pointer;" onclick="scanCamWifi()">&#128260; &#1057;&#1082;&#1072;&#1085;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;</button>
+  </div>
+  <div id="wscan-cur" style="font-size:12px;color:#cbd5e1;margin-bottom:6px;">&#1058;&#1077;&#1082;&#1091;&#1097;&#1072;&#1103; &#1089;&#1077;&#1090;&#1100;: <b>&mdash;</b></div>
+  <div id="wscan-list" style="pointer-events:auto !important;max-height:130px;overflow-y:auto;background:#1e293b;border-radius:6px;padding:4px;font-size:12px;color:#cbd5e1;">&#1053;&#1072;&#1078;&#1084;&#1080;&#1090;&#1077; &laquo;&#1057;&#1082;&#1072;&#1085;&#1080;&#1088;&#1086;&#1074;&#1072;&#1090;&#1100;&raquo;</div>
 </div>
+<script>
+window.renderCamWifi = function(d) {
+  var cur = document.getElementById("wscan-cur");
+  var lst = document.getElementById("wscan-list");
+  if (cur && d) cur.innerHTML = "&#1058;&#1077;&#1082;&#1091;&#1097;&#1072;&#1103; &#1089;&#1077;&#1090;&#1100;: <b style='color:#4ade80;'>" + (d.cur || "&mdash;") + "</b>";
+  if (!lst || !d) return;
+  if (!d.aps || !d.aps.length) {
+    lst.innerHTML = "<div style='color:#94a3b8;padding:6px;'>&#1057;&#1077;&#1090;&#1080; &#1085;&#1077; &#1085;&#1072;&#1081;&#1076;&#1077;&#1085;&#1099;</div>";
+    return;
+  }
+  lst.innerHTML = d.aps.map(function(a) {
+    var s = String(a.ssid || "").replace(/</g, "&lt;");
+    return "<div style='padding:6px 8px;border-bottom:1px solid #0f172a;display:flex;justify-content:space-between;'><span>&#128246; " + s + "</span><span style='color:#38bdf8;'>" + (a.sig ? a.sig + "%" : "") + "</span></div>";
+  }).join("");
+};
+window.scanCamWifi = function() {
+  var lst = document.getElementById("wscan-list");
+  if (lst) lst.innerHTML = "<div style='color:#38bdf8;padding:6px;'>&#1057;&#1082;&#1072;&#1085;&#1080;&#1088;&#1086;&#1074;&#1072;&#1085;&#1080;&#1077; &#1101;&#1092;&#1080;&#1088;&#1072;...</div>";
+  fetch("/wifi/scan?poll=1", {cache: "no-store"}).then(function(r){ return r.json(); }).then(window.renderCamWifi).catch(function(){});
+  setTimeout(function() {
+    fetch("/wifi/scan?poll=0", {cache: "no-store"}).then(function(r){ return r.json(); }).then(window.renderCamWifi).catch(function(){});
+  }, 1500);
+  setTimeout(function() {
+    fetch("/wifi/scan?poll=0", {cache: "no-store"}).then(function(r){ return r.json(); }).then(window.renderCamWifi).catch(function(){});
+  }, 3200);
+};
+setTimeout(function() {
+  fetch("/wifi/scan?poll=0", {cache: "no-store"}).then(function(r){ return r.json(); }).then(window.renderCamWifi).catch(function(){});
+}, 1200);
+</script>
 <button type="button" style="pointer-events:auto !important;padding:7px 10px;border:none;border-radius:7px;color:#fff;font-size:13px;cursor:pointer;width:100%;padding:9px;background:#dc2626;font-weight:bold;" onclick="if(confirm('&#1055;&#1077;&#1088;&#1077;&#1079;&#1072;&#1075;&#1088;&#1091;&#1079;&#1080;&#1090;&#1100; &#1082;&#1072;&#1084;&#1077;&#1088;&#1091;?'))camExt('reboot',{})">&#128260; &#1055;&#1077;&#1088;&#1077;&#1079;&#1072;&#1075;&#1088;&#1091;&#1079;&#1080;&#1090;&#1100; &#1082;&#1072;&#1084;&#1077;&#1088;&#1091;</button></div></div><script>
 window.applyOsd = function(on) {
   var oc = document.getElementById("osd-clk");
@@ -400,6 +433,7 @@ document.getElementById("btn-nvr"), xNvr = document.getElementById("nvr-x"), dIn
   }, 1000);
 })();
 </script>
+<div id="rec-badge" style="display:none;position:fixed;top:14px;right:14px;z-index:9999;background:rgba(15,23,42,0.82);color:#fca5a5;border:1px solid rgba(239,68,68,0.65);padding:4px 10px;border-radius:7px;font:700 12px/1.2 system-ui,sans-serif;letter-spacing:0.6px;pointer-events:none;align-items:center;"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-right:6px;box-shadow:0 0 8px #ef4444;"></span>REC</div>
 <div id="osd-clk" style="display:none;position:fixed;bottom:52px;left:14px;z-index:9998;color:#fff;background:rgba(0,0,0,.65);border:1px solid rgba(255,255,255,.25);padding:4px 9px;border-radius:6px;font-family:monospace;font-size:13px;font-weight:bold;pointer-events:none;"></div>
 
 <style>
@@ -598,6 +632,163 @@ body.fs-active #fs-exit-btn { display: block !important; }
   window.addEventListener("touchend", stopAllPtz, true);
   window.addEventListener("touchcancel", stopAllPtz, true);
   window.addEventListener("blur", stopAllPtz, true);
+})();
+</script>
+<script>
+(function() {
+  var liteOn = localStorage.getItem("cam_lite_mode") === "1";
+  var nextTimer = null;
+  var wdTimer = null;
+
+  function clearTimers() {
+    if (nextTimer) { clearTimeout(nextTimer); nextTimer = null; }
+    if (wdTimer) { clearTimeout(wdTimer); wdTimer = null; }
+  }
+
+  function updateBtn() {
+    var b = document.getElementById("btn-lite-toggle");
+    if (!b) return;
+    if (liteOn) {
+      b.innerHTML = "&#9889; &#1051;&#1072;&#1081;&#1090;: &#1042;&#1050;&#1051;";
+      b.style.setProperty("background", "#0284c7", "important");
+      b.style.setProperty("border-color", "#38bdf8", "important");
+    } else {
+      b.innerHTML = "&#9889; &#1051;&#1072;&#1081;&#1090;: &#1042;&#1067;&#1050;&#1051;";
+      b.style.setProperty("background", "#1e293b", "important");
+      b.style.setProperty("border-color", "#334155", "important");
+    }
+  }
+
+  function runLiteLoop() {
+    clearTimers();
+    var im = document.getElementById("mjpg");
+    if (!im || !liteOn) return;
+
+    var pump = function() {
+      if (!liteOn) return;
+      clearTimers();
+      var done = false;
+      var finish = function(delay) {
+        if (done || !liteOn) return;
+        done = true;
+        clearTimers();
+        nextTimer = setTimeout(pump, delay);
+      };
+      im.onload = function() { finish(70); };
+      im.onerror = function() { finish(350); };
+      wdTimer = setTimeout(function() { finish(150); }, 2500);
+      im.src = "/snapshot.jpg?t=" + Date.now();
+    };
+    pump();
+  }
+
+  function applyLiteState(switchQuality) {
+    updateBtn();
+    var im = document.getElementById("mjpg");
+    if (!im) return;
+    if (liteOn) {
+      if (switchQuality) {
+        fetch("/ctrl?act=res&val=0", {cache: "no-store"}).catch(function(){});
+      }
+      runLiteLoop();
+    } else {
+      clearTimers();
+      im.onload = null;
+      im.onerror = null;
+      if (switchQuality) {
+        fetch("/ctrl?act=res&val=1", {cache: "no-store"}).catch(function(){});
+      }
+      im.src = "/stream.mjpg?t=" + Date.now();
+    }
+  }
+
+  window.toggleLiteMode = function() {
+    liteOn = !liteOn;
+    localStorage.setItem("cam_lite_mode", liteOn ? "1" : "0");
+    applyLiteState(true);
+  };
+
+  function mountLiteButton() {
+    var camBtn = document.getElementById("btn-cam-ext");
+    if (camBtn && !document.getElementById("btn-lite-toggle")) {
+      var b = document.createElement("button");
+      b.id = "btn-lite-toggle";
+      b.type = "button";
+      b.onclick = window.toggleLiteMode;
+      b.style.cssText = camBtn.style.cssText + ";grid-column:1 / -1;margin-top:4px;font-weight:bold;";
+      camBtn.parentNode.appendChild(b);
+    }
+    applyLiteState(false);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mountLiteButton);
+  } else {
+    mountLiteButton();
+  }
+})();
+</script>
+<script>
+(function() {
+  var ledOn = localStorage.getItem("cam_led") !== "0";
+  function updLedBtn() {
+    var b = document.getElementById("btn-cam-led");
+    if (!b) return;
+    b.innerHTML = ledOn ? "&#128161; &#1048;&#1085;&#1076;&#1080;&#1082;&#1072;&#1090;&#1086;&#1088;: &#1042;&#1050;&#1051;" : "&#128161; &#1048;&#1085;&#1076;&#1080;&#1082;&#1072;&#1090;&#1086;&#1088;: &#1042;&#1067;&#1050;&#1051;";
+    b.style.background = ledOn ? "#1e293b" : "#0f172a";
+  }
+  window.toggleCamLed = function() {
+    ledOn = !ledOn;
+    localStorage.setItem("cam_led", ledOn ? "1" : "0");
+    updLedBtn();
+    fetch("/cam/ext?act=led&val=" + (ledOn ? 1 : 0), {cache: "no-store"}).catch(function(){});
+  };
+  setInterval(function() {
+    var btns = document.querySelectorAll("button");
+    for (var i = 0; i < btns.length; i++) {
+      var tx = btns[i].textContent || "";
+      if ((tx.indexOf("50") !== -1 && tx.indexOf("60") !== -1) || tx.indexOf("180") !== -1) {
+        var box = btns[i].parentNode;
+        if (box && !document.getElementById("btn-cam-led")) {
+          var nb = document.createElement("button");
+          nb.id = "btn-cam-led";
+          nb.type = "button";
+          nb.onclick = window.toggleCamLed;
+          nb.style.cssText = btns[i].style.cssText + ";width:100%;margin-top:6px;";
+          box.appendChild(nb);
+          updLedBtn();
+        }
+        break;
+      }
+    }
+  }, 600);
+})();
+</script>
+<script>
+(function() {
+  function ensureRecBadge() {
+    var box = document.getElementById("mjpg") ? document.getElementById("mjpg").parentNode : document.body;
+    if (!box || document.getElementById("osd-rec-badge")) return;
+    if (getComputedStyle(box).position === "static") box.style.position = "relative";
+    var el = document.createElement("div");
+    el.id = "osd-rec-badge";
+    el.innerHTML = "<span style='display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-right:6px;box-shadow:0 0 8px #ef4444;'></span>REC";
+    el.style.cssText = "display:none;position:absolute;top:12px;right:12px;z-index:9999;background:rgba(15,23,42,0.78);color:#fca5a5;border:1px solid rgba(239,68,68,0.6);padding:3px 9px;border-radius:6px;font:700 12px/1.2 system-ui,sans-serif;letter-spacing:0.6px;pointer-events:none;align-items:center;";
+    box.appendChild(el);
+  }
+  function pollRec() {
+    ensureRecBadge();
+    fetch("/nvr/status", {cache: "no-store"}).then(function(r) {
+      return r.ok ? r.json() : null;
+    }).then(function(d) {
+      var el = document.getElementById("osd-rec-badge");
+      if (!el || !d) return;
+      var active = Boolean(d.recording || d.enabled || d.on || (d.nvr && (d.nvr.enabled || d.nvr.recording)));
+      el.style.display = active ? "flex" : "none";
+    }).catch(function(){});
+  }
+  setInterval(pollRec, 2000);
+  setTimeout(pollRec, 600);
 })();
 </script>
 </body>

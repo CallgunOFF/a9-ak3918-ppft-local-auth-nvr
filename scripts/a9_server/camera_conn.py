@@ -159,6 +159,61 @@ def _run_session(s, did, secret, state, timeout, start_seq):
         )
 
     def answer(cmd, rseq, rpc, ct):
+        if cmd in (2601, 2603) and ct:
+            try:
+                w_pt = P.ctrl_decrypt(cmd, rseq, rpc, ct)
+                if not w_pt and len(ct) > 4:
+                    w_pt = P.ctrl_decrypt(cmd, rseq, 0, ct)
+                if w_pt:
+                    # Пробуем разобрать protobuf (со смещением 0 и со смещением после кода ответа)
+                    parsed_list = []
+                    for off in range(0, min(6, len(w_pt))):
+                        try:
+                            parsed_list.append(P.pb_parse(w_pt[off:]))
+                        except Exception:
+                            pass
+                    if cmd == 2603:
+                        for wf in parsed_list:
+                            for fn in (2, 1, 3):
+                                v = next(iter(wf.get(fn, ())), None)
+                                if isinstance(v, bytes):
+                                    stxt = v.decode("utf-8", "replace").strip(chr(0)).strip()
+                                    if stxt and all(32 <= ord(ch) < 127 or ord(ch) > 160 for ch in stxt):
+                                        state.wifi_cur = stxt
+                                        break
+                            if getattr(state, "wifi_cur", ""):
+                                break
+                    elif cmd == 2601:
+                        aps = []
+                        wf_main = P.pb_parse(w_pt)
+                        for raw_ap in wf_main.get(2, ()):
+                            if not isinstance(raw_ap, bytes):
+                                continue
+                            try:
+                                ap_f = P.pb_parse(raw_ap)
+                            except Exception:
+                                continue
+                            ssid_b = next(iter(ap_f.get(1, ())), None)
+                            if not isinstance(ssid_b, bytes):
+                                ssid_b = next(iter(ap_f.get(2, ())), None)
+                            if not isinstance(ssid_b, bytes):
+                                continue
+                            s_txt = ssid_b.decode("utf-8", "replace").strip(chr(0)).strip()
+                            if not s_txt or "\ufffd" in s_txt or len(s_txt) > 32:
+                                continue
+                            if not all(32 <= ord(ch) < 127 or 1040 <= ord(ch) <= 1103 for ch in s_txt):
+                                continue
+                            sig_raw = next(iter(ap_f.get(3, ())), 0) or next(iter(ap_f.get(4, ())), 0)
+                            sig_val = 0
+                            if isinstance(sig_raw, int) and sig_raw != 0:
+                                if sig_raw > 1000000:
+                                    sig_raw = sig_raw - (1 << 64)
+                                sig_val = max(0, min(100, 2 * (sig_raw + 100))) if sig_raw < 0 else min(100, sig_raw)
+                            if not any(x.get("ssid") == s_txt for x in aps):
+                                aps.append({"ssid": s_txt, "sig": sig_val})
+                        state.wifi_aps = aps
+            except Exception:
+                pass
         if rpc != 0:
             return
 
@@ -169,7 +224,7 @@ def _run_session(s, did, secret, state, timeout, start_seq):
             pong = (
                 P.pb_varint_field(1, echo)
                 + P.pb_varint_field(2, P.HB_CONST)
-                + P.pb_varint_field(3, int(time.time() * 1000))
+                + P.pb_varint_field(3, int((time.time() + getattr(time.localtime(), 'tm_gmtoff', 0)) * 1000))
             )
 
             s.sendall(
@@ -361,6 +416,8 @@ def _run_session(s, did, secret, state, timeout, start_seq):
         if os.environ.get("A9_DEBUG") == "1": print(f"[LANAUTH-ERR] {_e!r}", flush=True)
     # --- /LAN-AUTH dump ---
     sys.stderr.write("[camera] authenticated; streaming\n")
+    state.push_cmd(2603, b"")
+    state.push_cmd(2601, b"")
     def _delayed_restore():
         time.sleep(1.5)
         if state.stop or not state.connected:

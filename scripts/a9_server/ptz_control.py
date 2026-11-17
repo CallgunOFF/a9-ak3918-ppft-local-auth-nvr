@@ -197,7 +197,7 @@ def _patrol_loop():
             on, sec = bool(_PATROL["on"]), int(_PATROL["sec"])
             order = _PATROL["pts"] or ["1","2","3","4","5","6"]
             pts = [k for k in order if k in _PTZ_POS.pts]
-            stuck = (not on and _PTZ_POS.dir != PTZ_STOP and (time.time() - _PTZ_POS.t) > 1.2)
+            stuck = (not on and _PTZ_POS.dir != PTZ_STOP and 1.2 < (time.time() - _PTZ_POS.t) < 4.0)
             if stuck: _PTZ_POS.dir, _PTZ_POS.t = PTZ_STOP, time.time()
         if stuck:
             sw = _get_st()
