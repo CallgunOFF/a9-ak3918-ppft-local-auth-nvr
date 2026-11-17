@@ -1,28 +1,24 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
-# Очистка старых копий
+DEBUG_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --debug|-d) DEBUG_MODE=1 ;;
+    esac
+done
+[ "${DEBUG:-0}" = "1" ] && DEBUG_MODE=1
+export A9_DEBUG="$DEBUG_MODE"
+
 pkill -f "a9_mjpeg_server.py" 2>/dev/null || true
 pkill -f "pinggy.io" 2>/dev/null || true
 pkill -f "localhost.run" 2>/dev/null || true
 sleep 1
 
-# Проверка базовых утилит
-NEED_PKG=""
-command -v python3 >/dev/null 2>&1 || NEED_PKG="$NEED_PKG python"
-command -v ssh >/dev/null 2>&1 || NEED_PKG="$NEED_PKG openssh"
-command -v curl >/dev/null 2>&1 || NEED_PKG="$NEED_PKG curl"
-if [ -n "$NEED_PKG" ]; then
-    pkg update -y && pkg install -y $NEED_PKG
-fi
-
-if command -v termux-wake-lock >/dev/null 2>&1; then
-    termux-wake-lock
-    echo "[*] Блокировка сна (wake-lock) включена."
-fi
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
 
 cleanup() {
     echo ""
@@ -37,7 +33,8 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-echo "[*] Запуск сервера камеры (с автоповтором поиска каждые 3с)..."
+[ "$DEBUG_MODE" = "1" ] && echo "[*] Режим ОТЛАДКИ (--debug) включён"
+
 (
     while true; do
         CAM_IP_VAL=$(grep -E '^(CAMERA_IP|CAM_IP)=' .env 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '[:space:]"\x27' || true)
@@ -46,7 +43,6 @@ echo "[*] Запуск сервера камеры (с автоповтором 
         else
             python3 a9_mjpeg_server.py || true
         fi
-        echo "[$(date +%H:%M:%S)] [SEARCH] Повторный поиск камеры через 3с..."
         sleep 3
     done
 ) &
@@ -71,9 +67,6 @@ wp = env.get("WEB_PASS", "")
 last_url = ""
 ansi_re = re.compile(r"\x1b\[[0-9;]*[mK]")
 
-if ntfy_topic:
-    print(f"[*] Push-оповещения ntfy.sh включены (канал: {ntfy_topic})", flush=True)
-
 while True:
     time.sleep(2)
     if not os.path.exists("tunnel.log"):
@@ -92,22 +85,25 @@ while True:
                         capture_output=True, text=True
                     )
                     if res.returncode == 0:
-                        print(f"[*] Новая ссылка отправлена в ntfy.sh/{ntfy_topic}: {cur_url}", flush=True)
+                        print(f"[*] Туннель:  {cur_url}  (отправлено в ntfy/{ntfy_topic})", flush=True)
                         last_url = cur_url
                 else:
+                    print(f"[*] Туннель:  {cur_url}", flush=True)
                     last_url = cur_url
     except Exception:
         pass
 PYEOF
 WATCH_PID=$!
 
-echo "[*] Запуск скоростного туннеля Pinggy (порт 443, резерв localhost.run)..."
 HOST_PORT="127.0.0"
 HOST_PORT="${HOST_PORT}.1:8080"
 
 while true; do
     : > "$TUN_LOG"
-    ssh -tt -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 80:"$HOST_PORT" nokey@localhost.run 2>&1 | tee -a "$TUN_LOG" || true
-    echo "[$(date +%H:%M:%S)] [TUNNEL] Переподключение через 3 секунды..."
+    if [ "$DEBUG_MODE" = "1" ]; then
+        ssh -tt -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 80:"$HOST_PORT" nokey@localhost.run 2>&1 | tee -a "$TUN_LOG" || true
+    else
+        ssh -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 80:"$HOST_PORT" nokey@localhost.run >> "$TUN_LOG" 2>&1 || true
+    fi
     sleep 3
 done

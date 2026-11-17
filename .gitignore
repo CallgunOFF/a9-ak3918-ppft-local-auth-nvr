@@ -3,3 +3,9 @@ __pycache__/
 *.log
 *.tar.gz
 Cam_Records/
+
+.env
+a9_camera.json
+__pycache__/
+*.pyc
+*.log
