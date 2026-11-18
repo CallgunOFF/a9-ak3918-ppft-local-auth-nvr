@@ -26,10 +26,10 @@ class _PureAviWriter:
         self.f.seek(0)
         usec = int(1_000_000 / max(1, self.fps))
         avih = struct.pack("<IIIIIIIIIIIIII", usec, 500000, 0, 0x10, n_frames, 0, 2, 65536, self.w, self.h, 0, 0, 0, 0)
-        strh_v = struct.pack("<4s4sIHHIIIIIIIIIhhhh", b"vids", b"MJPG", 0, 0, 0, 0, 1, self.fps, 0, n_frames, 65536, 0, 0, 0, 0, self.w, self.h)
+        strh_v = struct.pack("<4s4sIHHIIIIIIIIhhhh", b"vids", b"MJPG", 0, 0, 0, 0, 1, self.fps, 0, n_frames, 65536, 0, 0, 0, 0, self.w, self.h)
         strf_v = struct.pack("<IiiHH4sIiiII", 40, self.w, self.h, 1, 24, b"MJPG", self.w * self.h * 3, 0, 0, 0, 0)
         strl_v = b"LIST" + struct.pack("<I4s", 20 + len(strh_v) + len(strf_v), b"strl") + b"strh" + struct.pack("<I", len(strh_v)) + strh_v + b"strf" + struct.pack("<I", len(strf_v)) + strf_v
-        strh_a = struct.pack("<4s4sIHHIIIIIIIIIhhhh", b"auds", b"\x01\x00\x00\x00", 0, 0, 0, 0, 2, 16000, 0, 0, 8192, 0, 2, 0, 0, 0, 0)
+        strh_a = struct.pack("<4s4sIHHIIIIIIIIhhhh", b"auds", b"\x01\x00\x00\x00", 0, 0, 0, 0, 2, 16000, 0, 0, 8192, 0, 2, 0, 0, 0, 0)
         strf_a = struct.pack("<HHIIHH", 1, 1, 8000, 16000, 2, 16)
         strl_a = b"LIST" + struct.pack("<I4s", 20 + len(strh_a) + len(strf_a), b"strl") + b"strh" + struct.pack("<I", len(strh_a)) + strh_a + b"strf" + struct.pack("<I", len(strf_a)) + strf_a
         hdrl_b = b"hdrl" + b"avih" + struct.pack("<I", len(avih)) + avih + strl_v + strl_a

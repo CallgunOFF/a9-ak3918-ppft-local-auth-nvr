@@ -80,6 +80,27 @@ class Latest:
             self._b_cnt = 0
             self._stat_ts = _now
 
+    def wait_frame(self, last_seq, timeout=0.5):
+        with self.cond:
+            if self.seq == last_seq and not self.stop:
+                self.cond.wait(timeout=timeout)
+            return self.jpeg, self.last_frame_ts, self.seq
+
+    def wait_audio(self, last_seq, timeout=0.05):
+        with self.audio_cond:
+            if self.audio_seq == last_seq and not self.stop:
+                self.audio_cond.wait(timeout=timeout)
+            out = bytearray()
+            new_seq = last_seq
+            for item in self.audio_chunks:
+                if isinstance(item, tuple) and len(item) == 2:
+                    sq, chunk = item
+                    if sq > last_seq:
+                        out.extend(chunk)
+                        if sq > new_seq:
+                            new_seq = sq
+            return bytes(out), new_seq
+
     def push_cmd(self, cmd, payload=b""):
         with self.cmd_lock:
             if len(self.cmd_queue) == self.cmd_queue.maxlen:

@@ -378,7 +378,7 @@ def make_handler(state, first_timeout, max_age):
                 u=urlparse(self.path); qs=parse_qs(u.query)
                 if u.path=="/sd/info":
                     if qs.get("poll",["0"])[0]=="1":
-                        for sc in (2669,2670,2671,2672,2616,2621,2625): state.push_cmd(sc,P.pb_varint_field(1,0))
+                        for sc in (2669,2670,2671,2672,2621,2625): state.push_cmd(sc,P.pb_varint_field(1,0))
                     body=json.dumps(state.sd_data,ensure_ascii=False).encode("utf-8")
                 elif u.path=="/sd/format":
                     for fc in (2673,2674,2676,2677,2622,2626): state.push_cmd(fc,P.pb_varint_field(1,0))

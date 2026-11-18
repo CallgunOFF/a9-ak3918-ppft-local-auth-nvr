@@ -54,6 +54,8 @@ def camera_loop(ip, did, secret, state, timeout, start_seq):
                 (ip, P.PORT),
                 timeout=timeout,
             )
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
 
             with state.socket_lock:
                 state.camera_socket = s
@@ -394,9 +396,11 @@ def _run_session(s, did, secret, state, timeout, start_seq):
     _dq_hd = int(os.environ.get("CAM_QOS", "0") or 0)
     for cmd, pt in [
         (2653, b""),
+        (2617, b""),
+        (2657, P.pb_varint_field(1, 0) + P.pb_varint_field(2, 0)),
         (2645, b""),
         (P.CMD_VIDEOPLAY, b""),
-        (P.CMD_VIDEOPLAY, P.pb_varint_field(1, 0) + P.pb_varint_field(2, 1)),
+        (P.CMD_VIDEOPLAY, P.pb_varint_field(1, 0) + P.pb_varint_field(2, 30)),
         (getattr(P, "CMD_SETRES", 2612), P.pb_varint_field(1, 0) + P.pb_varint_field(2, _dq_hd)),
     ]:
         s.sendall(P.build_ctrl(seq, cmd, pt))

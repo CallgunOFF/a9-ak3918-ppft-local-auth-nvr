@@ -101,9 +101,9 @@ HOST_PORT="${HOST_PORT}.1:8080"
 while true; do
     : > "$TUN_LOG"
     if [ "$DEBUG_MODE" = "1" ]; then
-        ssh -tt -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 80:"$HOST_PORT" nokey@localhost.run 2>&1 | tee -a "$TUN_LOG" || true
+        ssh -tt -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 80:"$HOST_PORT" -i ~/.ssh/id_ed25519 localhost.run 2>&1 | tee -a "$TUN_LOG" || true
     else
-        ssh -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 80:"$HOST_PORT" nokey@localhost.run >> "$TUN_LOG" 2>&1 || true
+        ssh -T -o StrictHostKeyChecking=no -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 80:"$HOST_PORT" -i ~/.ssh/id_ed25519 localhost.run >> "$TUN_LOG" 2>&1 || true
     fi
     sleep 3
 done
